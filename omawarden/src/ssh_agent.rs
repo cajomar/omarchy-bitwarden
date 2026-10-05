@@ -86,14 +86,14 @@ pub struct Prompt {
     pub client: String,
     pub command: String,
     pub forwarded: bool,
-    /// Whether "Allow until lock" applies (first-use policy, not forwarded).
-    pub can_remember: bool,
+    /// Whether approving is remembered for this key and program until the
+    /// vault locks (first-use policy and not forwarded), so the UI can say so.
+    pub remembered: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Decision {
     pub approve: bool,
-    pub remember: bool,
 }
 
 struct Pending {
@@ -488,7 +488,7 @@ fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String
             client: conn.peer.describe(),
             command: conn.peer.cmdline.clone(),
             forwarded: conn.forwarded,
-            can_remember: policy == Confirm::FirstUse && !conn.forwarded,
+            remembered: policy == Confirm::FirstUse && !conn.forwarded,
         });
         if !decision.approve {
             return Err("denied".into());
@@ -962,19 +962,13 @@ mod tests {
                     client: "c".into(),
                     command: "cmd".into(),
                     forwarded: false,
-                    can_remember: true,
+                    remembered: true,
                 },
                 decision: None,
             },
         );
         assert_eq!(agent.pending().len(), 1);
-        assert!(agent.reply(
-            7,
-            Decision {
-                approve: true,
-                remember: false
-            }
-        ));
+        assert!(agent.reply(7, Decision { approve: true }));
         assert!(
             !agent.reply(7, Decision::default()),
             "a prompt can only be answered once"

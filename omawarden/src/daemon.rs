@@ -654,10 +654,6 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> std::io::Re
                     .get("approve")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                remember: req
-                    .get("remember")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
             };
             json!({ "ok": true, "delivered": state.ssh_agent.reply(id, decision) })
         }

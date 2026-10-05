@@ -219,11 +219,6 @@ enum SshAgentAction {
         allow: bool,
         #[arg(long)]
         deny: bool,
-        #[arg(
-            long,
-            help = "Remember the approval for this key and program until the vault locks"
-        )]
-        remember: bool,
     },
 }
 
@@ -784,13 +779,8 @@ fn main() -> ExitCode {
             let request = match action {
                 SshAgentAction::Status => json!({ "action": "ssh_agent_status" }),
                 SshAgentAction::Pending => json!({ "action": "ssh_agent_pending" }),
-                SshAgentAction::Reply {
-                    id,
-                    allow,
-                    deny: _,
-                    remember,
-                } => {
-                    json!({ "action": "ssh_agent_reply", "id": id, "approve": allow, "remember": remember })
+                SshAgentAction::Reply { id, allow, deny: _ } => {
+                    json!({ "action": "ssh_agent_reply", "id": id, "approve": allow })
                 }
             };
             ensure_daemon_running();

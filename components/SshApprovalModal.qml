@@ -1,0 +1,245 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import qs.Commons
+
+// Confirmation for an SSH agent signature request. The daemon summons the
+// overlay with an `ssh-approval` payload; the prompt fields come from
+// `omawarden ssh-agent pending`.
+Rectangle {
+  id: approvalRoot
+
+  property bool active: false
+  property var prompt: null
+  property int remaining: 0
+  property color foreground: "#ffffff"
+  property color accent: "#3b82f6"
+  property color borderColor: Qt.rgba(1, 1, 1, 0.1)
+  property string fontFamily: ""
+
+  readonly property color mutedForeground: Qt.darker(foreground, 1.5)
+  readonly property color dangerColor: "#f87171"
+
+  signal replyRequested(bool approve)
+
+  anchors.fill: parent
+  color: Qt.rgba(0, 0, 0, 0.65)
+  visible: active && prompt !== null
+  z: 120
+
+  Keys.onPressed: function(event) {
+    if (event.key === Qt.Key_Escape) {
+      approvalRoot.replyRequested(false)
+      event.accepted = true
+    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      approvalRoot.replyRequested(true)
+      event.accepted = true
+    }
+  }
+
+  onVisibleChanged: if (visible) approvalRoot.forceActiveFocus()
+  onPromptChanged: if (visible) approvalRoot.forceActiveFocus()
+
+  // Clicking outside denies, like Esc: a stray click must never approve.
+  MouseArea {
+    anchors.fill: parent
+    onClicked: approvalRoot.replyRequested(false)
+  }
+
+  Rectangle {
+    id: card
+    anchors.centerIn: parent
+    width: Math.min(parent.width - 48, 520)
+    implicitHeight: content.implicitHeight + 32
+    height: implicitHeight
+    radius: 8
+    color: Qt.rgba(0.12, 0.14, 0.18, 0.98)
+    border.color: approvalRoot.prompt && approvalRoot.prompt.forwarded ? approvalRoot.dangerColor : approvalRoot.borderColor
+    border.width: 1
+
+    MouseArea { anchors.fill: parent }
+
+    ColumnLayout {
+      id: content
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.margins: 16
+      spacing: 12
+
+      // Header: key icon, question, countdown
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: 8
+
+        Text {
+          text: ""
+          font.family: approvalRoot.fontFamily
+          font.pixelSize: Style.font.title
+          color: approvalRoot.accent
+        }
+
+        Text {
+          text: approvalRoot.prompt ? approvalRoot.prompt.title : ""
+          color: approvalRoot.foreground
+          font.pixelSize: Style.font.subtitle
+          font.weight: Font.DemiBold
+          elide: Text.ElideRight
+          Layout.fillWidth: true
+          Layout.preferredWidth: 0
+        }
+
+        Text {
+          visible: approvalRoot.remaining > 0
+          text: approvalRoot.remaining + "s"
+          color: approvalRoot.remaining <= 10 ? approvalRoot.dangerColor : approvalRoot.mutedForeground
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      Rectangle {
+        Layout.fillWidth: true
+        height: 1
+        color: approvalRoot.borderColor
+      }
+
+      // Forwarded requests come from a remote host: say so loudly.
+      Rectangle {
+        visible: approvalRoot.prompt !== null && approvalRoot.prompt.forwarded === true
+        Layout.fillWidth: true
+        implicitHeight: forwardedText.implicitHeight + 12
+        radius: 4
+        color: Qt.rgba(0.97, 0.44, 0.44, 0.12)
+        border.color: Qt.rgba(0.97, 0.44, 0.44, 0.4)
+        border.width: 1
+
+        Text {
+          id: forwardedText
+          anchors.fill: parent
+          anchors.margins: 6
+          text: "  Forwarded from a remote host. Only allow this if you just ran something there that needs your key."
+          font.family: approvalRoot.fontFamily
+          color: approvalRoot.dangerColor
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
+      }
+
+      // What is being signed
+      Text {
+        Layout.fillWidth: true
+        text: approvalRoot.prompt ? approvalRoot.prompt.action : ""
+        color: approvalRoot.foreground
+        font.pixelSize: Style.font.body
+        font.weight: Font.Medium
+        wrapMode: Text.WordWrap
+      }
+
+      // Key and requesting program
+      GridLayout {
+        Layout.fillWidth: true
+        columns: 2
+        columnSpacing: 12
+        rowSpacing: 4
+
+        Text { text: "Key"; color: approvalRoot.mutedForeground; font.pixelSize: Style.font.caption }
+        Text {
+          Layout.fillWidth: true
+          text: approvalRoot.prompt ? approvalRoot.prompt.key_name : ""
+          color: approvalRoot.foreground
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        Text { text: "Fingerprint"; color: approvalRoot.mutedForeground; font.pixelSize: Style.font.caption }
+        Text {
+          Layout.fillWidth: true
+          text: approvalRoot.prompt ? approvalRoot.prompt.fingerprint : ""
+          color: approvalRoot.mutedForeground
+          font.pixelSize: Style.font.caption
+          font.family: "monospace"
+          elide: Text.ElideMiddle
+        }
+
+        Text { text: "Requested by"; color: approvalRoot.mutedForeground; font.pixelSize: Style.font.caption }
+        Text {
+          Layout.fillWidth: true
+          text: approvalRoot.prompt ? approvalRoot.prompt.client : ""
+          color: approvalRoot.foreground
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        Text { text: "Command"; color: approvalRoot.mutedForeground; font.pixelSize: Style.font.caption }
+        Text {
+          Layout.fillWidth: true
+          text: approvalRoot.prompt ? approvalRoot.prompt.command : ""
+          color: approvalRoot.mutedForeground
+          font.pixelSize: Style.font.caption
+          font.family: "monospace"
+          elide: Text.ElideRight
+        }
+      }
+
+      // Actions
+      RowLayout {
+        Layout.fillWidth: true
+        Layout.topMargin: 4
+        spacing: 8
+
+        Text {
+          text: approvalRoot.prompt && approvalRoot.prompt.remembered
+                ? "Enter allow · Esc deny · remembered for this program until the vault locks"
+                : "Enter allow · Esc deny"
+          color: Qt.darker(approvalRoot.foreground, 2.0)
+          font.pixelSize: Style.font.caption
+          Layout.fillWidth: true
+          elide: Text.ElideRight
+        }
+
+        Rectangle {
+          implicitHeight: 28
+          implicitWidth: 70
+          radius: 4
+          color: denyMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : "transparent"
+          border.color: approvalRoot.borderColor
+          border.width: 1
+          Text {
+            anchors.centerIn: parent
+            text: "Deny"
+            color: denyMouse.containsMouse ? approvalRoot.foreground : Qt.darker(approvalRoot.foreground, 1.3)
+            font.pixelSize: Style.font.bodySmall
+          }
+          MouseArea {
+            id: denyMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: approvalRoot.replyRequested(false)
+          }
+        }
+
+        Rectangle {
+          implicitHeight: 28
+          implicitWidth: 80
+          radius: 4
+          color: allowMouse.containsMouse ? Qt.lighter(approvalRoot.accent, 1.1) : approvalRoot.accent
+          Text {
+            anchors.centerIn: parent
+            text: "Allow"
+            color: "#ffffff"
+            font.pixelSize: Style.font.bodySmall
+            font.weight: Font.DemiBold
+          }
+          MouseArea {
+            id: allowMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: approvalRoot.replyRequested(true)
+          }
+        }
+      }
+    }
+  }
+}

@@ -307,6 +307,11 @@ Item {
   property bool showSshKeyModal: false
   property string sshKeyModalMode: "create"
   property var sshKeyModalItem: null
+  // SSH agent confirmation: the first pending prompt from `ssh-agent pending`.
+  // `sshApprovalOnly` means the overlay was opened just for it and closes after.
+  property var sshApprovalPrompt: null
+  property bool sshApprovalOnly: false
+  property int sshApprovalRemaining: 0
   property bool showPasswordHistoryModal: false
   property var activePasswordHistoryItem: null
   property bool showPasswordGeneratorModal: false
@@ -416,6 +421,17 @@ Item {
   }
 
   function open(payloadJson) {
+    var payload = {}
+    try { payload = JSON.parse(payloadJson || "{}") || {} } catch (e) { payload = {} }
+    if (payload.view === "ssh-approval") {
+      // Don't disturb a session already on screen; just show the prompt on top.
+      if (root.opened) {
+        root.refreshSshApprovals()
+        return
+      }
+      root.sshApprovalOnly = true
+      root.refreshSshApprovals()
+    }
     root.opened = true
     root.errorMessage = ""
     root.statusMessage = ""
@@ -472,7 +488,23 @@ Item {
     })
   }
 
+  function refreshSshApprovals() {
+    if (sshPendingProc.running) return
+    sshPendingProc.command = [root.helperPath, "ssh-agent", "pending"]
+    sshPendingProc.running = true
+  }
+
+  function replySshApproval(approve) {
+    var p = root.sshApprovalPrompt
+    if (!p || sshReplyProc.running) return
+    root.logInfo("omarchy:ssh-agent", (approve ? "Allowed" : "Denied") + " signature with key " + p.key_name + " for " + p.client)
+    root.sshApprovalPrompt = null
+    sshReplyProc.command = [root.helperPath, "ssh-agent", "reply", String(p.id), approve ? "--allow" : "--deny"]
+    sshReplyProc.running = true
+  }
+
   function close() {
+    root.sshApprovalOnly = false
     root.opened = false
     totpGenProc.running = false
     root.showActionPalette = false
@@ -1666,6 +1698,8 @@ Item {
     if (settings.check_updates !== undefined) cmd.push("--check-updates", String(settings.check_updates))
     if (settings.remember_last_search !== undefined) cmd.push("--remember-last-search", String(settings.remember_last_search))
     if (settings.max_attachment_size_mb !== undefined) cmd.push("--max-attachment-size", String(settings.max_attachment_size_mb))
+    if (settings.ssh_agent_enabled !== undefined) cmd.push("--ssh-agent", String(settings.ssh_agent_enabled))
+    if (settings.ssh_agent_confirm !== undefined) cmd.push("--ssh-agent-confirm", settings.ssh_agent_confirm)
 
     configSetProc.command = cmd
     configSetProc.running = true
@@ -2528,6 +2562,18 @@ Item {
       }
 
       // 7. Password History Modal Overlay
+      SshApprovalModal {
+        id: sshApprovalModalComponent
+        active: root.opened
+        prompt: root.sshApprovalPrompt
+        remaining: root.sshApprovalRemaining
+        fontFamily: root.fontFamily
+        foreground: root.foreground
+        accent: root.accent
+        borderColor: root.borderColor
+        onReplyRequested: function(approve) { root.replySshApproval(approve) }
+      }
+
       PasswordHistoryModal {
         id: passwordHistoryModalComponent
         active: root.showPasswordHistoryModal
@@ -2726,6 +2772,46 @@ Item {
       }
     }
   }
+  Process {
+    id: sshPendingProc
+    command: []
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var prompts = []
+        try {
+          var data = JSON.parse((text || "").trim() || "{}")
+          prompts = Array.isArray(data.prompts) ? data.prompts : []
+        } catch (e) {
+          root.logError("omarchy:ssh-agent", "Failed to parse pending prompts: " + e)
+        }
+        var next = prompts.length > 0 ? prompts[0] : null
+        // The daemon gives each prompt 60 seconds; count down from first sight.
+        if (next && (!root.sshApprovalPrompt || root.sshApprovalPrompt.id !== next.id)) root.sshApprovalRemaining = 60
+        root.sshApprovalPrompt = next
+        if (next) Qt.callLater(function() { sshApprovalModalComponent.forceActiveFocus() })
+        if (!next && root.sshApprovalOnly && root.opened) root.close()
+      }
+    }
+  }
+
+  Process {
+    id: sshReplyProc
+    command: []
+    onExited: root.refreshSshApprovals()
+  }
+
+  // While a prompt is showing, notice when it times out or is answered elsewhere.
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.sshApprovalPrompt !== null
+    onTriggered: {
+      if (root.sshApprovalRemaining > 0) root.sshApprovalRemaining--
+      root.refreshSshApprovals()
+    }
+  }
+
   Process {
     id: configGetProc
     property int seq: 0

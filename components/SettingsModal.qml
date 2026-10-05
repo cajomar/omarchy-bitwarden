@@ -73,6 +73,8 @@ Item {
       clientKeyInput.text = settingsRoot.certMatchesServer ? ((config && config.client_key_path) || "") : ""
     }
   }
+  property bool sshAgentChecked: false
+  property string sshAgentConfirm: "first-use"
 
   onConfigChanged: {
     if (config) checkUpdatesChecked = (config.check_updates !== false)
@@ -88,6 +90,8 @@ Item {
     if (clientKeyInput) {
       clientKeyInput.text = settingsRoot.certMatchesServer ? ((config && config.client_key_path) || "") : ""
     }
+    if (config) sshAgentChecked = (config.ssh_agent_enabled === true)
+    if (config && config.ssh_agent_confirm) sshAgentConfirm = config.ssh_agent_confirm
   }
 
   function buildPayload() {
@@ -108,7 +112,9 @@ Item {
       log_level: settingsRoot.selectedLogLevel,
       show_website_icons: settingsRoot.showWebsiteIconsChecked,
       check_updates: settingsRoot.checkUpdatesChecked,
-      remember_last_search: settingsRoot.rememberLastSearchChecked
+      remember_last_search: settingsRoot.rememberLastSearchChecked,
+      ssh_agent_enabled: settingsRoot.sshAgentChecked,
+      ssh_agent_confirm: settingsRoot.sshAgentConfirm
     }
   }
 
@@ -842,6 +848,68 @@ Item {
               color: settingsRoot.mutedForeground
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+            }
+          }
+
+          // SSH Agent Toggle
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 3
+            RowLayout {
+              spacing: 6
+              Rectangle {
+                width: 14; height: 14; radius: 3; color: settingsRoot.sshAgentChecked ? settingsRoot.accent : Qt.rgba(0, 0, 0, 0.2); border.color: settingsRoot.borderColor; border.width: 1
+                Text {
+                  anchors.centerIn: parent
+                  visible: settingsRoot.sshAgentChecked
+                  text: "\uf00c"
+                  font.family: settingsRoot.fontFamily
+                  color: "#ffffff"
+                  font.pixelSize: Style.fontPx(0.75)
+                }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: settingsRoot.sshAgentChecked = !settingsRoot.sshAgentChecked }
+              }
+              Text { text: "SSH Agent"; color: settingsRoot.foreground; font.pixelSize: Style.font.bodySmall }
+            }
+            Text {
+              Layout.fillWidth: true
+              text: "Serves your vault's SSH keys to ssh and git without writing them to disk. Point SSH_AUTH_SOCK at $XDG_RUNTIME_DIR/omawarden-ssh-agent.sock."
+              color: settingsRoot.mutedForeground
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            RowLayout {
+              visible: settingsRoot.sshAgentChecked
+              Layout.topMargin: 2
+              spacing: 6
+              Text { text: "Confirm signatures:"; color: settingsRoot.mutedForeground; font.pixelSize: Style.font.caption }
+              Repeater {
+                model: [["always", "Every time"], ["first-use", "First use"], ["never", "Never"]]
+                Rectangle {
+                  required property var modelData
+                  readonly property bool chosen: settingsRoot.sshAgentConfirm === modelData[0]
+                  implicitHeight: 20
+                  implicitWidth: confirmLabel.implicitWidth + 14
+                  radius: 3
+                  color: chosen ? settingsRoot.accent : (confirmMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+                  border.color: chosen ? settingsRoot.accent : settingsRoot.borderColor
+                  border.width: 1
+                  Text {
+                    id: confirmLabel
+                    anchors.centerIn: parent
+                    text: modelData[1]
+                    color: chosen ? "#ffffff" : settingsRoot.foreground
+                    font.pixelSize: Style.font.caption
+                  }
+                  MouseArea {
+                    id: confirmMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: settingsRoot.sshAgentConfirm = modelData[0]
+                  }
+                }
+              }
             }
           }
 
