@@ -201,6 +201,7 @@ pub struct DaemonState {
     pub auto_lock_duration: Mutex<Duration>,
     pub unlocked_at: Mutex<Option<Instant>>,
     pub max_session_lifetime: Mutex<Duration>,
+    pub ssh_agent: Arc<crate::ssh_agent::SshAgent>,
 }
 
 impl DaemonState {
@@ -212,6 +213,7 @@ impl DaemonState {
             auto_lock_duration: Mutex::new(Duration::from_secs(auto_lock_minutes * 60)),
             unlocked_at: Mutex::new(None),
             max_session_lifetime: Mutex::new(Duration::from_secs(12 * 3600)),
+            ssh_agent: Arc::new(crate::ssh_agent::SshAgent::default()),
         }
     }
 
@@ -371,6 +373,10 @@ pub fn run_daemon_server(state: Arc<DaemonState>) -> std::io::Result<()> {
     let mut perms = fs::metadata(&socket_path)?.permissions();
     perms.set_mode(0o600);
     fs::set_permissions(&socket_path, perms)?;
+
+    if let Err(e) = crate::ssh_agent::apply(&state) {
+        crate::log_error!("omawarden:daemon", "SSH agent failed to start: {}", e);
+    }
 
     let state_clone = state.clone();
     std::thread::spawn(move || loop {
@@ -623,12 +629,38 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> std::io::Re
         }),
         "stop" => {
             state.lock();
+            crate::ssh_agent::remove_socket();
             crate::attachment::clear_preview_attachments(None);
             let _ = writeln!(stream, "{}", json!({ "ok": true }));
             let _ = stream.flush();
             std::process::exit(0);
         }
         "status" => state.vault_mgr.get_status(),
+        // SSH agent confirmations: the overlay lists pending prompts and answers them.
+        "ssh_agent_apply" => match crate::ssh_agent::apply(&state) {
+            Ok(_) => json!({ "ok": true, "running": crate::ssh_agent::is_running(&state) }),
+            Err(e) => json!({ "ok": false, "error": format!("SSH agent: {e}") }),
+        },
+        "ssh_agent_status" => json!({
+            "ok": true,
+            "running": crate::ssh_agent::is_running(&state),
+            "socket": crate::ssh_agent::socket_path(),
+        }),
+        "ssh_agent_pending" => json!({ "ok": true, "prompts": state.ssh_agent.pending() }),
+        "ssh_agent_reply" => {
+            let id = req.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let decision = crate::ssh_agent::Decision {
+                approve: req
+                    .get("approve")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                remember: req
+                    .get("remember")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            };
+            json!({ "ok": true, "delivered": state.ssh_agent.reply(id, decision) })
+        }
         "unlock" => {
             let pwd = req.get("password").and_then(|v| v.as_str()).unwrap_or("");
             match state.unlock(pwd) {

@@ -49,6 +49,12 @@ pub struct Config {
     pub client_key_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_cert_server: Option<String>,
+    /// Serve the vault's SSH keys on $XDG_RUNTIME_DIR/omawarden-ssh-agent.sock.
+    #[serde(default)]
+    pub ssh_agent_enabled: bool,
+    /// When to confirm signatures: "always", "first-use" (until lock) or "never".
+    #[serde(default = "default_ssh_agent_confirm")]
+    pub ssh_agent_confirm: String,
 }
 
 fn default_server_url() -> String {
@@ -81,6 +87,9 @@ fn default_show_website_icons() -> bool {
 fn default_remember_last_search() -> bool {
     DEFAULT_REMEMBER_LAST_SEARCH
 }
+fn default_ssh_agent_confirm() -> String {
+    "first-use".to_string()
+}
 fn default_max_attachment_size_mb() -> u64 {
     DEFAULT_MAX_ATTACHMENT_SIZE_MB
 }
@@ -103,6 +112,8 @@ impl Default for Config {
             client_cert_path: None,
             client_key_path: None,
             client_cert_server: None,
+            ssh_agent_enabled: false,
+            ssh_agent_confirm: default_ssh_agent_confirm(),
         }
     }
 }
@@ -314,6 +325,18 @@ impl ConfigManager {
         if let Some(v) = options.remember_last_search {
             cfg.remember_last_search = v;
         }
+        if let Some(v) = options.ssh_agent_enabled {
+            cfg.ssh_agent_enabled = v;
+        }
+        if let Some(v) = options.ssh_agent_confirm {
+            if !matches!(v.as_str(), "always" | "first-use" | "never") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("ssh_agent_confirm must be always, first-use or never (got {v:?})"),
+                ));
+            }
+            cfg.ssh_agent_confirm = v;
+        }
         if let Some(v) = options.max_attachment_size_mb {
             cfg.max_attachment_size_mb = v;
         }
@@ -374,6 +397,8 @@ pub struct ConfigUpdateOptions {
     pub max_attachment_size_mb: Option<u64>,
     pub client_cert_path: Option<String>,
     pub client_key_path: Option<String>,
+    pub ssh_agent_enabled: Option<bool>,
+    pub ssh_agent_confirm: Option<String>,
 }
 
 #[cfg(test)]

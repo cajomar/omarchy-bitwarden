@@ -3,7 +3,9 @@ use omawarden::attachment::get_attachment;
 use omawarden::auth::AuthManager;
 use omawarden::clipboard::ClipboardManager;
 use omawarden::config::{ConfigManager, ConfigUpdateOptions};
-use omawarden::daemon::{run_daemon_server, send_daemon_request, DaemonState};
+use omawarden::daemon::{
+    ensure_daemon_running, run_daemon_server, send_daemon_request, DaemonState,
+};
 use omawarden::health::check_system_health;
 use omawarden::hook::install_lock_hook;
 use omawarden::keyring::KeyringManager;
@@ -130,6 +132,11 @@ enum Commands {
         #[command(subcommand)]
         action: SshKeyAction,
     },
+    #[command(name = "ssh-agent", about = "SSH agent backed by the vault's SSH keys")]
+    SshAgent {
+        #[command(subcommand)]
+        action: SshAgentAction,
+    },
     #[command(about = "Run omawarden background daemon")]
     Daemon {
         #[arg(long)]
@@ -199,6 +206,28 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum SshAgentAction {
+    #[command(about = "Show whether the agent is enabled and running, and its socket (JSON)")]
+    Status,
+    #[command(about = "List signatures waiting for confirmation (JSON)")]
+    Pending,
+    #[command(about = "Answer a pending confirmation")]
+    Reply {
+        #[arg(help = "Prompt id from `ssh-agent pending`")]
+        id: u64,
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        allow: bool,
+        #[arg(long)]
+        deny: bool,
+        #[arg(
+            long,
+            help = "Remember the approval for this key and program until the vault locks"
+        )]
+        remember: bool,
+    },
+}
+
+#[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum ConfigAction {
     #[command(about = "Get current configuration or a specific key")]
@@ -239,6 +268,10 @@ enum ConfigAction {
         client_cert: Option<String>,
         #[arg(long, help = "Path to separate client private key PEM file for mTLS")]
         client_key: Option<String>,
+        #[arg(long, help = "Serve vault SSH keys as an SSH agent (true/false)")]
+        ssh_agent: Option<String>,
+        #[arg(long, help = "Confirm SSH signatures: always, first-use or never")]
+        ssh_agent_confirm: Option<String>,
     },
 }
 
@@ -545,6 +578,8 @@ fn main() -> ExitCode {
                         "client_cert_server" => {
                             println!("{}", cfg.client_cert_server.as_deref().unwrap_or(""))
                         }
+                        "ssh_agent_enabled" | "ssh_agent" => println!("{}", cfg.ssh_agent_enabled),
+                        "ssh_agent_confirm" => println!("{}", cfg.ssh_agent_confirm),
                         _ => {
                             eprintln!("Unknown configuration key: {}", k);
                             return ExitCode::FAILURE;
@@ -570,6 +605,8 @@ fn main() -> ExitCode {
                 max_attachment_size,
                 client_cert,
                 client_key,
+                ssh_agent,
+                ssh_agent_confirm,
             } => {
                 let storage_mgr = match cli.config.as_deref() {
                     Some(cp) => {
@@ -668,6 +705,10 @@ fn main() -> ExitCode {
                     max_attachment_size_mb: max_attachment_size,
                     client_cert_path: client_cert,
                     client_key_path: client_key,
+                    ssh_agent_enabled: ssh_agent
+                        .as_ref()
+                        .map(|v| matches!(v.trim().to_lowercase().as_str(), "true" | "1" | "yes")),
+                    ssh_agent_confirm: ssh_agent_confirm.clone(),
                 };
 
                 let (updated_cfg, _server_changed) =
@@ -679,6 +720,10 @@ fn main() -> ExitCode {
                         }
                     };
                 cfg = updated_cfg;
+                if ssh_agent.is_some() {
+                    // Start or stop the agent in the running daemon (no restart, so no lock).
+                    let _ = send_daemon_request(&json!({ "action": "ssh_agent_apply" }));
+                }
                 if let Some(lock_mins) = auto_lock {
                     let _ = send_daemon_request(&json!({
                         "action": "set_auto_lock",
@@ -734,6 +779,44 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         },
+
+        Commands::SshAgent { action } => {
+            let request = match action {
+                SshAgentAction::Status => json!({ "action": "ssh_agent_status" }),
+                SshAgentAction::Pending => json!({ "action": "ssh_agent_pending" }),
+                SshAgentAction::Reply {
+                    id,
+                    allow,
+                    deny: _,
+                    remember,
+                } => {
+                    json!({ "action": "ssh_agent_reply", "id": id, "approve": allow, "remember": remember })
+                }
+            };
+            ensure_daemon_running();
+            match send_daemon_request(&request) {
+                Some(mut resp) => {
+                    if let Some(obj) = resp.as_object_mut() {
+                        obj.insert("enabled".into(), json!(cfg.ssh_agent_enabled));
+                        obj.insert("confirm".into(), json!(cfg.ssh_agent_confirm));
+                    }
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                    let delivered = resp
+                        .get("delivered")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) && delivered {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                None => {
+                    eprintln!("The omawarden daemon is not responding.");
+                    ExitCode::FAILURE
+                }
+            }
+        }
 
         Commands::Health => {
             let status = check_system_health(&cfg.server_url);

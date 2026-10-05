@@ -13,6 +13,7 @@ pub mod keyring;
 pub mod locked;
 pub mod logging;
 pub mod ssh;
+pub mod ssh_agent;
 pub mod storage;
 pub mod totp;
 pub mod vault;
