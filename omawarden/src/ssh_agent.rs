@@ -174,22 +174,33 @@ impl SshAgent {
                 },
             );
         }
-        // A system notification with Approve/Deny buttons; the overlay card
-        // (listed via `pending`) can still answer, and is the fallback when
-        // there is no notification server.
+        // A system notification. Servers that render buttons get Approve and
+        // Deny; Omarchy's only fires "default" on click, which opens the
+        // overlay card. Dismissing or expiring answers nothing: the prompt
+        // stays pending (and answerable in the overlay) until it times out.
         let agent = self.clone();
         let spawned = notify(
             &title,
             &body,
-            &[("approve", "Approve"), ("deny", "Deny")],
+            &[
+                ("default", "Review"),
+                ("approve", "Approve"),
+                ("deny", "Deny"),
+            ],
             PROMPT_TIMEOUT,
-            move |action| {
-                agent.reply(
-                    id,
-                    Decision {
-                        approve: action == "approve",
-                    },
-                );
+            move |action| match action {
+                "approve" | "deny" => {
+                    agent.reply(
+                        id,
+                        Decision {
+                            approve: action == "approve",
+                        },
+                    );
+                }
+                "default" => {
+                    summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }))
+                }
+                _ => {}
             },
         );
         if !spawned {
@@ -504,12 +515,12 @@ fn wait_for_unlock(state: &DaemonState) -> bool {
         let spawned = notify(
             "Vault locked",
             "An SSH key was requested. Unlock your vault to continue.",
-            &[("unlock", "Unlock")],
+            &[("default", "Unlock")],
             UNLOCK_TIMEOUT,
             {
                 let agent = agent.clone();
                 move |action| {
-                    if action == "unlock" {
+                    if action == "default" {
                         summon_overlay(&serde_json::json!({}));
                     }
                     agent.unlock_prompted.store(false, Ordering::SeqCst);
