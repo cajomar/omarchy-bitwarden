@@ -102,11 +102,39 @@ pub fn validate_socket_path(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What to do about a running daemon built from a different commit.
+#[derive(Debug, PartialEq)]
+enum DaemonCheck {
+    UpToDate,
+    /// Mismatched but unlocked: replacing it would lock the vault and drop
+    /// the SSH agent socket mid-use, so leave it until it locks.
+    Defer,
+    Replace,
+}
+
+fn check_running_daemon(ping: &Value, our_commit: &str) -> DaemonCheck {
+    let running_commit = ping.get("commit").and_then(|v| v.as_str()).unwrap_or("");
+    if running_commit == our_commit {
+        DaemonCheck::UpToDate
+    } else if ping.get("unlocked").and_then(|v| v.as_bool()) == Some(true) {
+        DaemonCheck::Defer
+    } else {
+        DaemonCheck::Replace
+    }
+}
+
 pub fn ensure_daemon_running() {
     if let Some(resp) = send_daemon_request(&json!({ "action": "ping" })) {
-        let running_commit = resp.get("commit").and_then(|v| v.as_str()).unwrap_or("");
-        if running_commit == env!("GIT_HASH") {
-            return;
+        match check_running_daemon(&resp, env!("GIT_HASH")) {
+            DaemonCheck::UpToDate => return,
+            DaemonCheck::Defer => {
+                crate::log_info!(
+                    "omawarden:daemon",
+                    "Running daemon is from another build but the vault is unlocked; keeping it until it locks"
+                );
+                return;
+            }
+            DaemonCheck::Replace => {}
         }
         // Outdated daemon running: gracefully stop it so we can spawn the latest binary version
         let _ = send_daemon_request(&json!({ "action": "stop" }));
@@ -626,6 +654,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> std::io::Re
             "pong": true,
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("GIT_HASH"),
+            "unlocked": is_unlocked,
         }),
         "stop" => {
             state.lock();
@@ -1113,6 +1142,34 @@ mod tests {
         let search_res = send_req(json!({ "action": "search", "query": "test" }));
         assert!(search_res.is_array());
         assert!(*state.last_activity.lock().unwrap() > past);
+    }
+
+    #[test]
+    fn test_outdated_daemon_is_only_replaced_while_locked() {
+        let ping = |commit: &str, unlocked: Option<bool>| {
+            let mut v = json!({ "ok": true, "commit": commit });
+            if let Some(u) = unlocked {
+                v["unlocked"] = json!(u);
+            }
+            v
+        };
+        assert_eq!(
+            check_running_daemon(&ping("abc", Some(true)), "abc"),
+            DaemonCheck::UpToDate
+        );
+        assert_eq!(
+            check_running_daemon(&ping("old", Some(true)), "abc"),
+            DaemonCheck::Defer
+        );
+        assert_eq!(
+            check_running_daemon(&ping("old", Some(false)), "abc"),
+            DaemonCheck::Replace
+        );
+        // Daemons predating the field are replaced as before.
+        assert_eq!(
+            check_running_daemon(&ping("old", None), "abc"),
+            DaemonCheck::Replace
+        );
     }
 
     #[test]
