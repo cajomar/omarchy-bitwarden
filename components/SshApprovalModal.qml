@@ -189,7 +189,7 @@ Rectangle {
 
         Text {
           text: approvalRoot.prompt && approvalRoot.prompt.remembered
-                ? "Enter allow · Esc deny · remembered for this program until the vault locks"
+                ? "Enter allow · Esc deny · remembered for this program until you log out"
                 : "Enter allow · Esc deny"
           color: Qt.darker(approvalRoot.foreground, 2.0)
           font.pixelSize: Style.font.caption

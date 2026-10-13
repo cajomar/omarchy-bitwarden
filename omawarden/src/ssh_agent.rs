@@ -6,7 +6,8 @@
 //! according to `ssh_agent_confirm`:
 //!
 //! - `always`: every signature
-//! - `first-use` (default): once per key and client program, until the vault locks
+//! - `first-use` (default): once per key and client program, until the daemon
+//!   exits (normally at logout); re-locking the vault does not reset it
 //! - `never`: no prompt (the vault still has to be unlocked)
 //!
 //! Requests that arrive through agent forwarding (OpenSSH's
@@ -105,8 +106,10 @@ pub struct SshAgent {
     pending: Mutex<HashMap<u64, Pending>>,
     answered: Condvar,
     next_id: AtomicU64,
-    /// Approved "fingerprint|client exe" pairs, valid for one unlock session.
-    approvals: Mutex<(Option<Instant>, HashSet<String>)>,
+    /// Approved "fingerprint|client exe" pairs. They outlive vault locks:
+    /// the vault re-locks on every screen lock, and unlocking already proves
+    /// presence, so asking again each time adds nothing.
+    approvals: Mutex<HashSet<String>>,
     /// Whether the socket is currently bound.
     running: std::sync::atomic::AtomicBool,
     /// An unlock prompt is already on screen.
@@ -119,7 +122,7 @@ impl Default for SshAgent {
             pending: Mutex::new(HashMap::new()),
             answered: Condvar::new(),
             next_id: AtomicU64::new(1),
-            approvals: Mutex::new((None, HashSet::new())),
+            approvals: Mutex::new(HashSet::new()),
             running: std::sync::atomic::AtomicBool::new(false),
             unlock_prompted: std::sync::atomic::AtomicBool::new(false),
         }
@@ -214,23 +217,13 @@ impl SshAgent {
         decision
     }
 
-    fn is_approved(&self, session: Option<Instant>, key: &str) -> bool {
-        let Ok(mut a) = self.approvals.lock() else {
-            return false;
-        };
-        if a.0 != session {
-            // The vault was locked (or re-unlocked) since: start over.
-            *a = (session, HashSet::new());
-        }
-        a.1.contains(key)
+    fn is_approved(&self, key: &str) -> bool {
+        self.approvals.lock().is_ok_and(|a| a.contains(key))
     }
 
-    fn approve(&self, session: Option<Instant>, key: String) {
+    fn approve(&self, key: String) {
         if let Ok(mut a) = self.approvals.lock() {
-            if a.0 != session {
-                *a = (session, HashSet::new());
-            }
-            a.1.insert(key);
+            a.insert(key);
         }
     }
 }
@@ -244,7 +237,7 @@ fn notification_text(p: &Prompt) -> (String, String) {
     if p.forwarded {
         body.push_str("\nForwarded from a remote host");
     } else if p.remembered {
-        body.push_str("\nApproval lasts until the vault locks");
+        body.push_str("\nApproval is remembered for this program until you log out");
     }
     (p.title.clone(), body)
 }
@@ -571,13 +564,12 @@ fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String
 
     let cfg = crate::config::ConfigManager::default().load();
     let policy = Confirm::parse(&cfg.ssh_agent_confirm);
-    let session = state.unlocked_at.lock().ok().and_then(|g| *g);
     let remember_key = format!("{}|{}", key.fingerprint, conn.peer.exe);
     let needs_prompt = conn.forwarded
         || match policy {
             Confirm::Never => false,
             Confirm::Always => true,
-            Confirm::FirstUse => !state.ssh_agent.is_approved(session, &remember_key),
+            Confirm::FirstUse => !state.ssh_agent.is_approved(&remember_key),
         };
     if needs_prompt {
         let (title, action) = describe(&purpose(&data), conn.host.as_deref());
@@ -596,7 +588,7 @@ fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String
             return Err("denied".into());
         }
         if policy == Confirm::FirstUse && !conn.forwarded {
-            state.ssh_agent.approve(session, remember_key);
+            state.ssh_agent.approve(remember_key);
         }
     }
 
@@ -716,7 +708,8 @@ pub fn purpose(data: &[u8]) -> Purpose {
         let user = String::from_utf8_lossy(r.string()?).into_owned();
         let service = r.string()?;
         let method = r.string()?;
-        if service != b"ssh-connection" || method != b"publickey" {
+        let publickey = method == b"publickey" || method == b"publickey-hostbound-v00@openssh.com";
+        if service != b"ssh-connection" || !publickey {
             return Err("unexpected service".into());
         }
         Ok(Purpose::Login { user })
@@ -948,7 +941,7 @@ mod tests {
         let (title, body) = notification_text(&p);
         assert_eq!(title, "Log in to github.com?");
         assert!(body.contains("git@github.com") && body.contains("\"Work\""));
-        assert!(body.contains("until the vault locks"));
+        assert!(body.contains("until you log out"));
         p.forwarded = true;
         assert!(notification_text(&p).1.contains("Forwarded"));
     }
@@ -1018,6 +1011,15 @@ mod tests {
         put_string(&mut login, b"publickey");
         login.push(1);
         assert_eq!(purpose(&login), Purpose::Login { user: "git".into() });
+
+        let mut hostbound = Vec::new();
+        put_string(&mut hostbound, b"session-id");
+        hostbound.push(50);
+        put_string(&mut hostbound, b"git");
+        put_string(&mut hostbound, b"ssh-connection");
+        put_string(&mut hostbound, b"publickey-hostbound-v00@openssh.com");
+        hostbound.push(1);
+        assert_eq!(purpose(&hostbound), Purpose::Login { user: "git".into() });
 
         let mut sig = b"SSHSIG".to_vec();
         put_string(&mut sig, b"git");
@@ -1105,13 +1107,11 @@ mod tests {
     }
 
     #[test]
-    fn approvals_reset_when_the_session_changes() {
+    fn approvals_are_per_key_and_program() {
         let agent = SshAgent::default();
-        let s1 = Some(Instant::now());
-        agent.approve(s1, "fp|/usr/bin/ssh".into());
-        assert!(agent.is_approved(s1, "fp|/usr/bin/ssh"));
-        let s2 = Some(Instant::now() + Duration::from_secs(1));
-        assert!(!agent.is_approved(s2, "fp|/usr/bin/ssh"));
-        assert!(!agent.is_approved(None, "fp|/usr/bin/ssh"));
+        agent.approve("fp|/usr/bin/ssh".into());
+        assert!(agent.is_approved("fp|/usr/bin/ssh"));
+        assert!(!agent.is_approved("fp|/usr/bin/git"));
+        assert!(!agent.is_approved("other|/usr/bin/ssh"));
     }
 }

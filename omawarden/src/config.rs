@@ -52,7 +52,7 @@ pub struct Config {
     /// Serve the vault's SSH keys on $XDG_RUNTIME_DIR/omawarden-ssh-agent.sock.
     #[serde(default)]
     pub ssh_agent_enabled: bool,
-    /// When to confirm signatures: "always", "first-use" (until lock) or "never".
+    /// When to confirm signatures: "always", "first-use" (until logout) or "never".
     #[serde(default = "default_ssh_agent_confirm")]
     pub ssh_agent_confirm: String,
 }
