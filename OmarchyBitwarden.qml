@@ -312,6 +312,9 @@ Item {
   property var sshApprovalPrompt: null
   property bool sshApprovalOnly: false
   property int sshApprovalRemaining: 0
+  // Set while closing the overlay with prompts still pending: they are denied
+  // one by one so `ssh` fails now instead of hanging until the daemon times out.
+  property bool sshDenyingOnClose: false
   property bool showPasswordHistoryModal: false
   property var activePasswordHistoryItem: null
   property bool showPasswordGeneratorModal: false
@@ -432,6 +435,7 @@ Item {
       root.sshApprovalOnly = true
       root.refreshSshApprovals()
     }
+    root.sshDenyingOnClose = false
     root.opened = true
     root.errorMessage = ""
     root.statusMessage = ""
@@ -504,6 +508,11 @@ Item {
   }
 
   function close() {
+    // Closing the window without answering counts as Deny.
+    if (root.sshApprovalPrompt) {
+      root.sshDenyingOnClose = true
+      root.replySshApproval(false)
+    }
     root.sshApprovalOnly = false
     root.opened = false
     totpGenProc.running = false
@@ -2789,6 +2798,11 @@ Item {
         // The daemon gives each prompt 60 seconds; count down from first sight.
         if (next && (!root.sshApprovalPrompt || root.sshApprovalPrompt.id !== next.id)) root.sshApprovalRemaining = 60
         root.sshApprovalPrompt = next
+        if (root.sshDenyingOnClose) {
+          if (next) root.replySshApproval(false)
+          else root.sshDenyingOnClose = false
+          return
+        }
         if (next) Qt.callLater(function() { sshApprovalModalComponent.forceActiveFocus() })
         if (!next && root.sshApprovalOnly && root.opened) root.close()
       }

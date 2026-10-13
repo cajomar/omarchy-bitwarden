@@ -109,6 +109,8 @@ pub struct SshAgent {
     approvals: Mutex<(Option<Instant>, HashSet<String>)>,
     /// Whether the socket is currently bound.
     running: std::sync::atomic::AtomicBool,
+    /// An unlock prompt is already on screen.
+    unlock_prompted: std::sync::atomic::AtomicBool,
 }
 
 impl Default for SshAgent {
@@ -119,6 +121,7 @@ impl Default for SshAgent {
             next_id: AtomicU64::new(1),
             approvals: Mutex::new((None, HashSet::new())),
             running: std::sync::atomic::AtomicBool::new(false),
+            unlock_prompted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -155,9 +158,10 @@ impl SshAgent {
         }
     }
 
-    fn ask(&self, mut prompt: Prompt) -> Decision {
+    fn ask(self: &Arc<Self>, mut prompt: Prompt) -> Decision {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         prompt.id = id;
+        let (title, body) = notification_text(&prompt);
         if let Ok(mut pending) = self.pending.lock() {
             pending.insert(
                 id,
@@ -167,7 +171,27 @@ impl SshAgent {
                 },
             );
         }
-        summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }));
+        // A system notification with Approve/Deny buttons; the overlay card
+        // (listed via `pending`) can still answer, and is the fallback when
+        // there is no notification server.
+        let agent = self.clone();
+        let spawned = notify(
+            &title,
+            &body,
+            &[("approve", "Approve"), ("deny", "Deny")],
+            PROMPT_TIMEOUT,
+            move |action| {
+                agent.reply(
+                    id,
+                    Decision {
+                        approve: action == "approve",
+                    },
+                );
+            },
+        );
+        if !spawned {
+            summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }));
+        }
 
         let deadline = Instant::now() + PROMPT_TIMEOUT;
         let Ok(mut pending) = self.pending.lock() else {
@@ -209,6 +233,58 @@ impl SshAgent {
             a.1.insert(key);
         }
     }
+}
+
+/// Notification text for a pending signature.
+fn notification_text(p: &Prompt) -> (String, String) {
+    let mut body = format!(
+        "{} \u{2014} key \"{}\"\nRequested by {}",
+        p.action, p.key_name, p.client
+    );
+    if p.forwarded {
+        body.push_str("\nForwarded from a remote host");
+    } else if p.remembered {
+        body.push_str("\nApproval lasts until the vault locks");
+    }
+    (p.title.clone(), body)
+}
+
+/// Show a system notification with action buttons and hand the chosen action
+/// (empty when dismissed or expired) to `on_action` from a worker thread.
+/// Returns false if `notify-send` couldn't be started.
+fn notify(
+    title: &str,
+    body: &str,
+    actions: &[(&str, &str)],
+    timeout: Duration,
+    on_action: impl FnOnce(&str) + Send + 'static,
+) -> bool {
+    let mut cmd = std::process::Command::new("notify-send");
+    cmd.args([
+        "--app-name=Bitwarden",
+        "--icon=dialog-password",
+        "--urgency=critical",
+    ])
+    .arg(format!("--expire-time={}", timeout.as_millis()));
+    for (name, label) in actions {
+        cmd.arg("-A").arg(format!("{name}={label}"));
+    }
+    cmd.arg(title)
+        .arg(body)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let Ok(child) = cmd.spawn() else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let action = child
+            .wait_with_output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        on_action(&action);
+    });
+    true
 }
 
 /// Open the Omarchy Bitwarden overlay (for a prompt, or to unlock).
@@ -428,11 +504,37 @@ fn wait_for_unlock(state: &DaemonState) -> bool {
     if state.vault_mgr.is_unlocked() {
         return true;
     }
-    summon_overlay(&serde_json::json!({}));
+    // One unlock prompt at a time, however many ssh processes are waiting.
+    if !state.ssh_agent.unlock_prompted.swap(true, Ordering::SeqCst) {
+        summon_overlay(&serde_json::json!({}));
+        let agent = state.ssh_agent.clone();
+        let spawned = notify(
+            "Vault locked",
+            "An SSH key was requested. Unlock your vault to continue.",
+            &[("unlock", "Unlock")],
+            UNLOCK_TIMEOUT,
+            {
+                let agent = agent.clone();
+                move |action| {
+                    if action == "unlock" {
+                        summon_overlay(&serde_json::json!({}));
+                    }
+                    agent.unlock_prompted.store(false, Ordering::SeqCst);
+                }
+            },
+        );
+        if !spawned {
+            agent.unlock_prompted.store(false, Ordering::SeqCst);
+        }
+    }
     let deadline = Instant::now() + UNLOCK_TIMEOUT;
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(250));
         if state.vault_mgr.is_unlocked() {
+            state
+                .ssh_agent
+                .unlock_prompted
+                .store(false, Ordering::SeqCst);
             return true;
         }
     }
@@ -509,7 +611,11 @@ fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String
             .decrypt(pass.as_bytes())
             .map_err(|e| format!("decrypting private key: {e}"))?;
     }
-    sign_with(&private, &data, flags)
+    // Only a completed signature counts as activity: listing keys is open to
+    // any process of this user and must not keep the vault unlocked.
+    let signature = sign_with(&private, &data, flags)?;
+    state.touch_activity();
+    Ok(signature)
 }
 
 /// Produce an SSH signature blob (string algorithm, string signature).
@@ -824,6 +930,27 @@ mod tests {
         let sig = <ssh_key::Signature as ssh_encoding::Decode>::decode(&mut &blob[..]).unwrap();
         signature::Verifier::verify(key.public_key(), data, &sig).unwrap();
         sig
+    }
+
+    #[test]
+    fn notification_text_reflects_policy() {
+        let mut p = Prompt {
+            id: 1,
+            title: "Log in to github.com?".into(),
+            action: "SSH login as git@github.com".into(),
+            key_name: "Work".into(),
+            fingerprint: String::new(),
+            client: "git (ssh)".into(),
+            command: String::new(),
+            forwarded: false,
+            remembered: true,
+        };
+        let (title, body) = notification_text(&p);
+        assert_eq!(title, "Log in to github.com?");
+        assert!(body.contains("git@github.com") && body.contains("\"Work\""));
+        assert!(body.contains("until the vault locks"));
+        p.forwarded = true;
+        assert!(notification_text(&p).1.contains("Forwarded"));
     }
 
     #[test]
