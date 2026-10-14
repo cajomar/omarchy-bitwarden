@@ -8,6 +8,7 @@ import qs.Commons
 import qs.Ui
 import "./components"
 import "./components/IconPolicy.js" as IconPolicy
+import "./components/CardFormatter.js" as CardFormatter
 
 Item {
   id: root
@@ -302,6 +303,7 @@ Item {
   property var sshKeyModalItem: null
   property bool showPasswordHistoryModal: false
   property var activePasswordHistoryItem: null
+  readonly property bool hasActiveModal: root.showActionPalette || root.showSshKeyModal || root.showPasswordHistoryModal
   property var activeAttachmentPreview: null
   property string loadingAttachmentId: ""
 
@@ -348,7 +350,7 @@ Item {
 
   onEffectiveViewChanged: {
     Qt.callLater(function() {
-      if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField) {
+      if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.hasActiveModal) {
         searchHeader.searchField.forceActiveFocus()
       } else if (root.opened && root.effectiveView !== "dependency_check" && authViewComponent && authViewComponent.unlockInput) {
         authViewComponent.unlockInput.forceActiveFocus()
@@ -536,7 +538,7 @@ Item {
   }
 
   function refreshHealth() {
-    healthProc.running = false
+    if (healthProc.running) return
     healthProc.command = [
       "sh", "-c",
       "if command -v \"$1\" >/dev/null 2>&1 || [ -x \"$1\" ]; then exec \"$1\" health; else exit 127; fi",
@@ -547,7 +549,7 @@ Item {
   }
 
   function refreshAuthStatus() {
-    authStatusProc.running = false
+    if (authStatusProc.running) return
     authStatusProc.command = [
       "sh", "-c",
       "if command -v \"$1\" >/dev/null 2>&1 || [ -x \"$1\" ]; then exec \"$1\" auth status; else exit 127; fi",
@@ -968,19 +970,19 @@ Item {
   onShowActionPaletteChanged: {
     if (root.showActionPalette) {
       root.updateAvailableActions()
-    } else {
+    } else if (!root.hasActiveModal) {
       root.restoreSearchFocus()
     }
   }
 
   onShowSshKeyModalChanged: {
-    if (!root.showSshKeyModal) {
+    if (!root.showSshKeyModal && !root.hasActiveModal) {
       root.restoreSearchFocus()
     }
   }
 
   onShowPasswordHistoryModalChanged: {
-    if (!root.showPasswordHistoryModal) {
+    if (!root.showPasswordHistoryModal && !root.hasActiveModal) {
       root.restoreSearchFocus()
     }
   }
@@ -1044,7 +1046,7 @@ Item {
         break
       case "card":
         if (item.card && item.card.number) {
-          copyToClipboard(item.card.number, true, "card number")
+          copyToClipboard(CardFormatter.sanitizeCardNumberForCopy(item.card.number), true, "card number")
         }
         break
       case "ssh_key":
@@ -1331,7 +1333,7 @@ Item {
         })
       }
     } else if (item.type_name === "card" && item.card) {
-      if (item.card.number) actions.push({ label: "Copy Card Number", icon: "\uf09d", shortcut: "↵", action: function() { root.copyToClipboard(item.card.number, true, "card number") } })
+      if (item.card.number) actions.push({ label: "Copy Card Number", icon: "\uf09d", shortcut: "↵", action: function() { root.copyToClipboard(CardFormatter.sanitizeCardNumberForCopy(item.card.number), true, "card number") } })
       if (item.card.code) actions.push({ label: "Copy Security Code (CVV)", icon: "\uf292", shortcut: "", action: function() { root.copyToClipboard(item.card.code, true, "CVV") } })
       if (item.card.cardholderName) actions.push({ label: "Copy Cardholder Name", icon: "\uf007", shortcut: "", action: function() { root.copyToClipboard(item.card.cardholderName, false, "cardholder") } })
       if (item.card.expMonth && item.card.expYear) {
@@ -1882,7 +1884,7 @@ Item {
 
       Shortcut {
         sequence: "Ctrl+K"
-        enabled: root.opened && root.effectiveView === "search" && !root.showActionPalette && !root.showSshKeyModal
+        enabled: root.opened && root.effectiveView === "search" && !root.hasActiveModal
         onActivated: {
           root.actionPaletteIndex = 0
           root.showActionPalette = true
@@ -1891,31 +1893,31 @@ Item {
 
       Shortcut {
         sequences: ["Ctrl+Return", "Ctrl+Enter"]
-        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal
+        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal
         onActivated: root.copyItemTotp(root.selectedItem)
       }
 
       Shortcut {
         sequence: "Ctrl+U"
-        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal
+        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal
         onActivated: root.copyItemUsername(root.selectedItem)
       }
 
       Shortcut {
         sequence: "Ctrl+T"
-        enabled: root.opened && (root.showPasswordHistoryModal || (root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal))
+        enabled: root.opened && (root.showPasswordHistoryModal || (root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal))
         onActivated: root.toggleItemRevealed()
       }
 
       Shortcut {
         sequence: "Ctrl+O"
-        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal
+        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal
         onActivated: root.openFirstWebsite(root.selectedItem)
       }
 
       Shortcut {
         sequence: "Ctrl+E"
-        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && root.selectedItem.type_name === "ssh_key" && !root.showActionPalette && !root.showSshKeyModal
+        enabled: root.opened && root.effectiveView === "search" && root.selectedItem !== null && root.selectedItem.type_name === "ssh_key" && !root.hasActiveModal
         onActivated: {
           root.openSshKeyModal("export", root.selectedItem)
         }
@@ -1923,19 +1925,19 @@ Item {
 
       Shortcut {
         sequence: "Ctrl+L"
-        enabled: root.opened && root.authState.status === "unlocked" && !root.showSshKeyModal
+        enabled: root.opened && root.authState.status === "unlocked" && !root.hasActiveModal
         onActivated: root.doLock()
       }
 
       Shortcut {
         sequence: "Ctrl+R"
-        enabled: root.opened && (root.authState.status === "unlocked" || (root.authState.status === "locked" && root.authState.has_session)) && !root.isBusy && !root.showSshKeyModal
+        enabled: root.opened && (root.authState.status === "unlocked" || (root.authState.status === "locked" && root.authState.has_session)) && !root.isBusy && !root.hasActiveModal
         onActivated: root.syncVault(false, true)
       }
 
       Shortcut {
         sequence: "Ctrl+,"
-        enabled: root.opened && !root.showSshKeyModal
+        enabled: root.opened && !root.hasActiveModal
         onActivated: {
           if (settingsView.showReleaseNotes) {
             settingsView.showReleaseNotes = false
@@ -1946,7 +1948,7 @@ Item {
 
       Shortcut {
         sequence: "Alt+V"
-        enabled: root.opened && root.effectiveView === "search" && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal
+        enabled: root.opened && root.effectiveView === "search" && !root.hasActiveModal
         onActivated: {
           if (searchHeader) searchHeader.openVaultScope()
         }
@@ -1954,7 +1956,7 @@ Item {
 
       Shortcut {
         sequence: "Alt+F"
-        enabled: root.opened && root.effectiveView === "search" && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal
+        enabled: root.opened && root.effectiveView === "search" && !root.hasActiveModal
         onActivated: {
           if (searchHeader) searchHeader.openFolderScope()
         }
@@ -1993,12 +1995,14 @@ Item {
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
         if (event.modifiers & Qt.ControlModifier && (event.key === Qt.Key_T || (event.text && event.text.toLowerCase() === "t"))) {
-          root.toggleItemRevealed()
-          event.accepted = true
-          return
+          if (root.showPasswordHistoryModal || (root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal)) {
+            root.toggleItemRevealed()
+            event.accepted = true
+            return
+          }
         }
 
-        if (event.modifiers & Qt.AltModifier && root.effectiveView === "search") {
+        if (event.modifiers & Qt.AltModifier && root.effectiveView === "search" && !root.hasActiveModal) {
           if (event.key === Qt.Key_V) {
             if (searchHeader) searchHeader.openVaultScope()
             event.accepted = true
@@ -2075,26 +2079,26 @@ Item {
           }
           event.accepted = true
         } else if (event.modifiers & Qt.ControlModifier) {
-          if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal) {
             root.copyItemTotp(root.selectedItem)
             event.accepted = true
-          } else if (event.key === Qt.Key_U && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_U && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal) {
             root.copyItemUsername(root.selectedItem)
             event.accepted = true
-          } else if (event.key === Qt.Key_K && root.effectiveView === "search" && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_K && root.effectiveView === "search" && !root.hasActiveModal) {
             root.actionPaletteIndex = 0
             root.showActionPalette = true
             event.accepted = true
-          } else if (event.key === Qt.Key_T && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_T && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal) {
             root.toggleItemRevealed()
             event.accepted = true
-          } else if (event.key === Qt.Key_O && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_O && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal) {
             root.openFirstWebsite(root.selectedItem)
             event.accepted = true
-          } else if (event.key === Qt.Key_E && root.effectiveView === "search" && root.selectedItem !== null && root.selectedItem.type_name === "ssh_key" && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_E && root.effectiveView === "search" && root.selectedItem !== null && root.selectedItem.type_name === "ssh_key" && !root.hasActiveModal) {
             root.openSshKeyModal("export", root.selectedItem)
             event.accepted = true
-          } else if (event.key === Qt.Key_H && root.effectiveView === "search" && root.selectedItem !== null && !root.showActionPalette && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_H && root.effectiveView === "search" && root.selectedItem !== null && !root.hasActiveModal) {
             if (root.selectedItem.login && root.selectedItem.login.password_history && root.selectedItem.login.password_history.length > 0) {
               root.activePasswordHistoryItem = root.selectedItem
               root.showPasswordHistoryModal = true
@@ -2102,13 +2106,13 @@ Item {
               root.statusMessage = "No password history recorded for this item."
             }
             event.accepted = true
-          } else if (event.key === Qt.Key_L && root.authState.status === "unlocked" && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_L && root.authState.status === "unlocked" && !root.hasActiveModal) {
             root.doLock()
             event.accepted = true
-          } else if (event.key === Qt.Key_R && (root.authState.status === "unlocked" || (root.authState.status === "locked" && root.authState.has_session)) && !root.isBusy && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_R && (root.authState.status === "unlocked" || (root.authState.status === "locked" && root.authState.has_session)) && !root.isBusy && !root.hasActiveModal) {
             root.syncVault(false, true)
             event.accepted = true
-          } else if (event.key === Qt.Key_Comma && !root.showSshKeyModal && !root.showPasswordHistoryModal) {
+          } else if (event.key === Qt.Key_Comma && !root.hasActiveModal) {
             root.currentView = (root.effectiveView === "settings") ? "auto" : "settings"
             event.accepted = true
           }
@@ -2127,7 +2131,7 @@ Item {
         SearchHeader {
           id: searchHeader
           visible: root.effectiveView === "search"
-          modalsActive: root.showActionPalette || root.showSshKeyModal || root.showPasswordHistoryModal
+          modalsActive: root.hasActiveModal
           Layout.preferredHeight: visible ? implicitHeight : 0
           searchQuery: root.searchQuery
           categoryList: root.categoryList
@@ -2723,7 +2727,7 @@ Item {
               root.clearSensitiveState()
             }
             Qt.callLater(function() {
-              if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.showActionPalette) {
+              if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.hasActiveModal) {
                 if (!searchHeader.searchField.activeFocus) {
                   var canRemember = Boolean(root.config && root.config.remember_last_search === true && root.authState && root.authState.status === "unlocked")
                   searchHeader.focusSearch(canRemember)
@@ -3099,7 +3103,7 @@ Item {
         root.statusMessage = "Vault synchronized."
         root.loadVaultItems()
         Qt.callLater(function() {
-          if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.showActionPalette) {
+          if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.hasActiveModal) {
             searchHeader.searchField.forceActiveFocus()
           }
         })
@@ -3133,7 +3137,7 @@ Item {
           var cleanText = (text || "").trim()
           if (cleanText === root.lastVaultItemsRawText && root.rawVaultItems && root.rawVaultItems.length > 0) {
             Qt.callLater(function() {
-              if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.showActionPalette) {
+              if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.hasActiveModal) {
                 searchHeader.searchField.forceActiveFocus()
               }
             })
@@ -3160,7 +3164,7 @@ Item {
           }
           root.filterVaultItems(false)
           Qt.callLater(function() {
-            if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.showActionPalette) {
+            if (root.opened && root.effectiveView === "search" && searchHeader && searchHeader.searchField && !root.hasActiveModal) {
               searchHeader.searchField.forceActiveFocus()
             }
           })
