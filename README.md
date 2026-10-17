@@ -40,7 +40,7 @@ The difference between them is not "CLI vs Desktop", but rather **the distinct d
 | **Attachment Decryption** | **Native**: Downloads encrypted blobs and decrypts binary payloads via `AES-256-CBC` for preview/export | **Not supported** (see open feature request [doy/rbw#130](https://github.com/doy/rbw/issues/130)) |
 | **Password Revision History** | **Native**: Decrypts and displays item password revision history | **Not supported** |
 | **Organizations & Collections** | **Full Support**: `RSA-OAEP-SHA1` Org key unwrapping, Multi-Org & Collection filtering | **Basic Support**: Focused on personal vault; limited organization & collection support ([doy/rbw#351](https://github.com/doy/rbw/issues/351)) |
-| **SSH Key Capabilities** | **Keypair Generation & Management**: Generates Ed25519/RSA keypairs locally, calculates fingerprints, and exports keys | **OpenSSH Agent Proxy**: Implements `SSH_AUTH_SOCK` to sign requests in-memory without keys touching disk (cannot generate keypairs) |
+| **SSH Key Capabilities** | **Keypair Generation & OpenSSH Agent**: Generates Ed25519/RSA keypairs, exports keys, and serves vault keys on `SSH_AUTH_SOCK` with per-program approval prompts | **OpenSSH Agent Proxy**: Implements `SSH_AUTH_SOCK` to sign requests in-memory without keys touching disk (cannot generate keypairs) |
 | **Lock Screen Security Integration** | **Active Zeroize on Lock**: Listens to Hyprlock, Omarchy lock, D-Bus `logind` sleep/lock signals | **Passive Idle Timeout**: Secrets remain in memory during sleep/lock if idle timer hasn't expired |
 | **Authentication & Secret Storage** | **System Keyring (Secret Service) Integration**: Silent background token renewal without interrupting workflow | **GnuPG / pinentry Interaction**: Standard pinentry (supports TTY `pinentry-curses`); independent of desktop keyring |
 | **GUI IPC Integration** | **Dedicated Structured JSON IPC Socket**: Designed for high-throughput, instant desktop overlay rendering (<1ms) | Plain text stdout/stderr intended for terminal pipelines |
@@ -50,8 +50,7 @@ The difference between them is not "CLI vs Desktop", but rather **the distinct d
 In the following scenarios, `rbw` holds clear advantages, allowing users to choose the best fit for their workflow:
 1. **Distribution Packaging & Maturity**: `rbw` is packaged in official repositories across Arch, Debian, Fedora, Alpine, NixOS, and macOS Homebrew for one-command installation. `omawarden` is primarily distributed via AUR and GitHub Releases, and is not yet in other official distribution repositories.
 2. **Headless & Server Compatibility**: `rbw` paired with `pinentry-curses` works seamlessly in pure TTYs, servers, or minimal Docker containers without Secret Service daemons. `omawarden` relies on system Secret Service keyrings for secure token persistence.
-3. **Real-time OpenSSH Agent Proxy**: `rbw` acts as an active `SSH_AUTH_SOCK` agent, signing requests in-memory without keys ever touching disk. `omawarden` does not yet implement the OpenSSH agent protocol and currently focuses on key generation, inspection, and local export.
-4. **Interactive CLI Editing**: `rbw` provides `rbw edit` to open `$EDITOR` and modify vault items directly from the terminal. `omawarden` currently focuses on read, extract, copy, and generation workflows, and terminal-based vault item mutation is not yet supported (planned for future releases).
+3. **Interactive CLI Editing**: `rbw` provides `rbw edit` to open `$EDITOR` and modify vault items directly from the terminal. `omawarden` currently focuses on read, extract, copy, and generation workflows, and terminal-based vault item mutation is not yet supported (planned for future releases).
 
 ---
 
@@ -258,6 +257,7 @@ flowchart TD
 - [x] Ephemeral Wayland clipboard manager with 30s auto-clear TTL
 - [x] Encrypted binary attachment downloads & inline previews (images & text)
 - [x] SSH key management (Ed25519/RSA/ECDSA generation, file import & export)
+- [x] Vault-backed OpenSSH agent with unlock-on-demand and approval prompts
 - [x] Multi-dimensional vault (personal/organization) and folder scope filtering
 - [x] Multi-organization & collection key unwrapping with badges
 - [x] Action Palette (<kbd>Ctrl</kbd>+<kbd>K</kbd>) & password history viewer (<kbd>Ctrl</kbd>+<kbd>H</kbd>)
