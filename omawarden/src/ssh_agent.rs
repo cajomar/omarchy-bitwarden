@@ -6,8 +6,9 @@
 //! according to `ssh_agent_confirm`:
 //!
 //! - `always`: every signature
-//! - `first-use` (default): once per key and client program, until the daemon
-//!   exits (normally at logout); re-locking the vault does not reset it
+//! - `first-use` (default): once per key, client program and the app it runs
+//!   in (terminal, editor…), until the daemon exits (normally at logout);
+//!   re-locking the vault does not reset it
 //! - `never`: no prompt (the vault still has to be unlocked)
 //!
 //! Requests that arrive through agent forwarding (OpenSSH's
@@ -87,8 +88,8 @@ pub struct Prompt {
     pub client: String,
     pub command: String,
     pub forwarded: bool,
-    /// Whether approving is remembered for this key and program until the
-    /// vault locks (first-use policy and not forwarded), so the UI can say so.
+    /// Whether approving is remembered for this key, program and app until
+    /// logout (first-use policy and not forwarded), so the UI can say so.
     pub remembered: bool,
 }
 
@@ -106,7 +107,7 @@ pub struct SshAgent {
     pending: Mutex<HashMap<u64, Pending>>,
     answered: Condvar,
     next_id: AtomicU64,
-    /// Approved "fingerprint|client exe" pairs. They outlive vault locks:
+    /// Approved "fingerprint|client exe|app exe" triples. They outlive vault locks:
     /// the vault re-locks on every screen lock, and unlocking already proves
     /// presence, so asking again each time adds nothing.
     approvals: Mutex<HashSet<String>>,
@@ -114,6 +115,8 @@ pub struct SshAgent {
     running: std::sync::atomic::AtomicBool,
     /// An unlock prompt is already on screen.
     unlock_prompted: std::sync::atomic::AtomicBool,
+    prompt_timeout: Duration,
+    unlock_timeout: Duration,
 }
 
 impl Default for SshAgent {
@@ -125,6 +128,8 @@ impl Default for SshAgent {
             approvals: Mutex::new(HashSet::new()),
             running: std::sync::atomic::AtomicBool::new(false),
             unlock_prompted: std::sync::atomic::AtomicBool::new(false),
+            prompt_timeout: PROMPT_TIMEOUT,
+            unlock_timeout: UNLOCK_TIMEOUT,
         }
     }
 }
@@ -161,73 +166,6 @@ impl SshAgent {
         }
     }
 
-    fn ask(self: &Arc<Self>, mut prompt: Prompt) -> Decision {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        prompt.id = id;
-        let (title, body) = notification_text(&prompt);
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(
-                id,
-                Pending {
-                    prompt,
-                    decision: None,
-                },
-            );
-        }
-        // A system notification. Servers that render buttons get Approve and
-        // Deny; Omarchy's only fires "default" on click, which opens the
-        // overlay card. Dismissing or expiring answers nothing: the prompt
-        // stays pending (and answerable in the overlay) until it times out.
-        let agent = self.clone();
-        let spawned = notify(
-            &title,
-            &body,
-            &[
-                ("default", "Review"),
-                ("approve", "Approve"),
-                ("deny", "Deny"),
-            ],
-            PROMPT_TIMEOUT,
-            move |action| match action {
-                "approve" | "deny" => {
-                    agent.reply(
-                        id,
-                        Decision {
-                            approve: action == "approve",
-                        },
-                    );
-                }
-                "default" => {
-                    summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }))
-                }
-                _ => {}
-            },
-        );
-        if !spawned {
-            summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }));
-        }
-
-        let deadline = Instant::now() + PROMPT_TIMEOUT;
-        let Ok(mut pending) = self.pending.lock() else {
-            return Decision::default();
-        };
-        let decision = loop {
-            if let Some(d) = pending.get(&id).and_then(|p| p.decision) {
-                break d;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                break Decision::default();
-            }
-            match self.answered.wait_timeout(pending, deadline - now) {
-                Ok((guard, _)) => pending = guard,
-                Err(_) => return Decision::default(),
-            }
-        };
-        pending.remove(&id);
-        decision
-    }
-
     fn is_approved(&self, key: &str) -> bool {
         self.approvals.lock().is_ok_and(|a| a.contains(key))
     }
@@ -239,6 +177,73 @@ impl SshAgent {
     }
 }
 
+/// Post a prompt and wait for its answer; no answer within the timeout denies.
+fn ask(host: &Arc<dyn Host>, mut prompt: Prompt) -> Decision {
+    let agent = host.agent();
+    let id = agent.next_id.fetch_add(1, Ordering::Relaxed);
+    prompt.id = id;
+    let (title, body) = notification_text(&prompt);
+    if let Ok(mut pending) = agent.pending.lock() {
+        pending.insert(
+            id,
+            Pending {
+                prompt,
+                decision: None,
+            },
+        );
+    }
+    // A system notification. Servers that render buttons get Approve and
+    // Deny; Omarchy's only fires "default" on click, which opens the overlay
+    // card. Dismissing or expiring answers nothing: the prompt stays pending
+    // (and answerable in the overlay) until it times out.
+    let h = host.clone();
+    let spawned = host.notify(
+        &title,
+        &body,
+        &[
+            ("default", "Review"),
+            ("approve", "Approve"),
+            ("deny", "Deny"),
+        ],
+        agent.prompt_timeout,
+        Box::new(move |action| match action {
+            "approve" | "deny" => {
+                h.agent().reply(
+                    id,
+                    Decision {
+                        approve: action == "approve",
+                    },
+                );
+            }
+            "default" => h.summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id })),
+            _ => {}
+        }),
+    );
+    if !spawned {
+        host.summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }));
+    }
+
+    let deadline = Instant::now() + agent.prompt_timeout;
+    let Ok(mut pending) = agent.pending.lock() else {
+        return Decision::default();
+    };
+    let decision = loop {
+        if let Some(d) = pending.get(&id).and_then(|p| p.decision) {
+            break d;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            break Decision::default();
+        }
+        match agent.answered.wait_timeout(pending, deadline - now) {
+            Ok((guard, _)) => pending = guard,
+            Err(_) => return Decision::default(),
+        }
+    };
+    pending.remove(&id);
+    decision
+}
+
 /// Notification text for a pending signature.
 fn notification_text(p: &Prompt) -> (String, String) {
     let mut body = format!(
@@ -248,7 +253,10 @@ fn notification_text(p: &Prompt) -> (String, String) {
     if p.forwarded {
         body.push_str("\nForwarded from a remote host");
     } else if p.remembered {
-        body.push_str("\nApproval is remembered for this program until you log out");
+        body.push_str(&format!(
+            "\nApproval is remembered for {} until you log out",
+            p.client
+        ));
     }
     (p.title.clone(), body)
 }
@@ -318,6 +326,66 @@ fn summon_overlay(payload: &serde_json::Value) {
 // Server
 // ---------------------------------------------------------------------------
 
+/// What the agent needs from the daemon and the desktop. The daemon is the
+/// real host; tests drive the protocol against a fake one.
+trait Host: Send + Sync + 'static {
+    fn agent(&self) -> &Arc<SshAgent>;
+    fn is_unlocked(&self) -> bool;
+    fn keys(&self) -> Vec<AgentKey>;
+    fn policy(&self) -> Confirm;
+    /// A signature was made (keeps the vault from idle-locking).
+    fn record_activity(&self);
+    fn known_host(&self, hostkey: &[u8]) -> Option<String>;
+    /// See [`notify`].
+    fn notify(
+        &self,
+        title: &str,
+        body: &str,
+        actions: &[(&str, &str)],
+        timeout: Duration,
+        on_action: Box<dyn FnOnce(&str) + Send>,
+    ) -> bool;
+    fn summon_overlay(&self, payload: &serde_json::Value);
+}
+
+impl Host for DaemonState {
+    fn agent(&self) -> &Arc<SshAgent> {
+        &self.ssh_agent
+    }
+    fn is_unlocked(&self) -> bool {
+        self.vault_mgr.is_unlocked()
+    }
+    fn keys(&self) -> Vec<AgentKey> {
+        vault_keys(self)
+    }
+    fn policy(&self) -> Confirm {
+        Confirm::parse(
+            &crate::config::ConfigManager::default()
+                .load()
+                .ssh_agent_confirm,
+        )
+    }
+    fn record_activity(&self) {
+        self.touch_activity();
+    }
+    fn known_host(&self, hostkey: &[u8]) -> Option<String> {
+        known_host_for(hostkey)
+    }
+    fn notify(
+        &self,
+        title: &str,
+        body: &str,
+        actions: &[(&str, &str)],
+        timeout: Duration,
+        on_action: Box<dyn FnOnce(&str) + Send>,
+    ) -> bool {
+        notify(title, body, actions, timeout, on_action)
+    }
+    fn summon_overlay(&self, payload: &serde_json::Value) {
+        summon_overlay(payload)
+    }
+}
+
 /// Start or stop the agent to match the `ssh_agent_enabled` setting, without
 /// restarting the daemon (which would lock the vault).
 pub fn apply(state: &Arc<DaemonState>) -> std::io::Result<bool> {
@@ -352,16 +420,22 @@ pub fn spawn(state: Arc<DaemonState>) -> std::io::Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     crate::log_info!("omawarden:ssh-agent", "listening on {}", path.display());
     state.ssh_agent.running.store(true, Ordering::SeqCst);
+    let host: Arc<dyn Host> = state;
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            if !state.ssh_agent.running.load(Ordering::SeqCst) {
+            if !host.agent().running.load(Ordering::SeqCst) {
                 break;
             }
             match stream {
                 Ok(stream) => {
-                    let st = state.clone();
+                    let host = host.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = serve(&st, stream) {
+                        let served =
+                            crate::daemon::verify_peer_credentials(&stream).and_then(|_| {
+                                let peer = Peer::of(&stream);
+                                serve(&host, stream, peer)
+                            });
+                        if let Err(e) = served {
                             crate::log_debug!("omawarden:ssh-agent", "client ended: {}", e);
                         }
                     });
@@ -385,10 +459,9 @@ struct Conn {
     forwarded: bool,
 }
 
-fn serve(state: &Arc<DaemonState>, mut stream: UnixStream) -> std::io::Result<()> {
-    crate::daemon::verify_peer_credentials(&stream)?;
+fn serve(host: &Arc<dyn Host>, mut stream: impl Read + Write, peer: Peer) -> std::io::Result<()> {
     let mut conn = Conn {
-        peer: Peer::of(&stream),
+        peer,
         host: None,
         forwarded: false,
     };
@@ -405,8 +478,8 @@ fn serve(state: &Arc<DaemonState>, mut stream: UnixStream) -> std::io::Result<()
         stream.read_exact(&mut msg)?;
         let (kind, body) = (msg[0], &msg[1..]);
         match kind {
-            REQUEST_IDENTITIES => send(&mut stream, IDENTITIES_ANSWER, &identities(state, &conn))?,
-            SIGN_REQUEST => match sign(state, &conn, body) {
+            REQUEST_IDENTITIES => send(&mut stream, IDENTITIES_ANSWER, &identities(host))?,
+            SIGN_REQUEST => match sign(host, &conn, body) {
                 Ok(sig) => {
                     let mut out = Vec::new();
                     put_string(&mut out, &sig);
@@ -422,7 +495,7 @@ fn serve(state: &Arc<DaemonState>, mut stream: UnixStream) -> std::io::Result<()
                 let reply = match (r.string().ok(), r.0) {
                     (Some(b"session-bind@openssh.com"), rest) => match parse_session_bind(rest) {
                         Some((hostkey, forwarded)) => {
-                            conn.host = known_host_for(&hostkey);
+                            conn.host = host.known_host(&hostkey);
                             // Sticky: a forwarded chain binds once per hop.
                             conn.forwarded |= forwarded;
                             SUCCESS
@@ -439,7 +512,7 @@ fn serve(state: &Arc<DaemonState>, mut stream: UnixStream) -> std::io::Result<()
     }
 }
 
-fn send(stream: &mut UnixStream, kind: u8, payload: &[u8]) -> std::io::Result<()> {
+fn send(stream: &mut impl Write, kind: u8, payload: &[u8]) -> std::io::Result<()> {
     let mut frame = Vec::with_capacity(payload.len() + 5);
     frame.extend_from_slice(&((payload.len() + 1) as u32).to_be_bytes());
     frame.push(kind);
@@ -504,50 +577,45 @@ fn vault_keys(state: &DaemonState) -> Vec<AgentKey> {
 }
 
 /// Wait for the vault to be unlocked, opening the overlay so the person can.
-fn wait_for_unlock(state: &DaemonState) -> bool {
-    if state.vault_mgr.is_unlocked() {
+fn wait_for_unlock(host: &Arc<dyn Host>) -> bool {
+    if host.is_unlocked() {
         return true;
     }
+    let agent = host.agent();
     // One unlock prompt at a time, however many ssh processes are waiting.
-    if !state.ssh_agent.unlock_prompted.swap(true, Ordering::SeqCst) {
-        summon_overlay(&serde_json::json!({}));
-        let agent = state.ssh_agent.clone();
-        let spawned = notify(
+    if !agent.unlock_prompted.swap(true, Ordering::SeqCst) {
+        host.summon_overlay(&serde_json::json!({}));
+        let h = host.clone();
+        let spawned = host.notify(
             "Vault locked",
             "An SSH key was requested. Unlock your vault to continue.",
             &[("default", "Unlock")],
-            UNLOCK_TIMEOUT,
-            {
-                let agent = agent.clone();
-                move |action| {
-                    if action == "default" {
-                        summon_overlay(&serde_json::json!({}));
-                    }
-                    agent.unlock_prompted.store(false, Ordering::SeqCst);
+            agent.unlock_timeout,
+            Box::new(move |action| {
+                if action == "default" {
+                    h.summon_overlay(&serde_json::json!({}));
                 }
-            },
+                h.agent().unlock_prompted.store(false, Ordering::SeqCst);
+            }),
         );
         if !spawned {
             agent.unlock_prompted.store(false, Ordering::SeqCst);
         }
     }
-    let deadline = Instant::now() + UNLOCK_TIMEOUT;
+    let deadline = Instant::now() + agent.unlock_timeout;
     while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(250));
-        if state.vault_mgr.is_unlocked() {
-            state
-                .ssh_agent
-                .unlock_prompted
-                .store(false, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        if host.is_unlocked() {
+            agent.unlock_prompted.store(false, Ordering::SeqCst);
             return true;
         }
     }
     false
 }
 
-fn identities(state: &DaemonState, _conn: &Conn) -> Vec<u8> {
-    let keys = if wait_for_unlock(state) {
-        vault_keys(state)
+fn identities(host: &Arc<dyn Host>) -> Vec<u8> {
+    let keys = if wait_for_unlock(host) {
+        host.keys()
     } else {
         Vec::new()
     };
@@ -559,47 +627,51 @@ fn identities(state: &DaemonState, _conn: &Conn) -> Vec<u8> {
     out
 }
 
-fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String> {
+fn sign(host: &Arc<dyn Host>, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String> {
     let mut r = Reader(body);
     let key_blob = r.string()?.to_vec();
     let data = r.string()?.to_vec();
     let flags = r.u32().unwrap_or(0);
 
-    if !wait_for_unlock(state) {
+    if !wait_for_unlock(host) {
         return Err("vault is locked".into());
     }
-    let key = vault_keys(state)
+    let key = host
+        .keys()
         .into_iter()
         .find(|k| k.blob == key_blob)
         .ok_or("key not in vault")?;
 
-    let cfg = crate::config::ConfigManager::default().load();
-    let policy = Confirm::parse(&cfg.ssh_agent_confirm);
-    let remember_key = format!("{}|{}", key.fingerprint, conn.peer.exe);
+    let agent = host.agent();
+    let policy = host.policy();
+    let remember_key = format!("{}|{}|{}", key.fingerprint, conn.peer.exe, conn.peer.app);
     let needs_prompt = conn.forwarded
         || match policy {
             Confirm::Never => false,
             Confirm::Always => true,
-            Confirm::FirstUse => !state.ssh_agent.is_approved(&remember_key),
+            Confirm::FirstUse => !agent.is_approved(&remember_key),
         };
     if needs_prompt {
         let (title, action) = describe(&purpose(&data), conn.host.as_deref());
-        let decision = state.ssh_agent.ask(Prompt {
-            id: 0,
-            title,
-            action,
-            key_name: key.name.clone(),
-            fingerprint: key.fingerprint.clone(),
-            client: conn.peer.describe(),
-            command: conn.peer.cmdline.clone(),
-            forwarded: conn.forwarded,
-            remembered: policy == Confirm::FirstUse && !conn.forwarded,
-        });
+        let decision = ask(
+            host,
+            Prompt {
+                id: 0,
+                title,
+                action,
+                key_name: key.name.clone(),
+                fingerprint: key.fingerprint.clone(),
+                client: conn.peer.describe(),
+                command: conn.peer.cmdline.clone(),
+                forwarded: conn.forwarded,
+                remembered: policy == Confirm::FirstUse && !conn.forwarded,
+            },
+        );
         if !decision.approve {
             return Err("denied".into());
         }
         if policy == Confirm::FirstUse && !conn.forwarded {
-            state.ssh_agent.approve(remember_key);
+            agent.approve(remember_key);
         }
     }
 
@@ -617,7 +689,7 @@ fn sign(state: &DaemonState, conn: &Conn, body: &[u8]) -> Result<Vec<u8>, String
     // Only a completed signature counts as activity: listing keys is open to
     // any process of this user and must not keep the vault unlocked.
     let signature = sign_with(&private, &data, flags)?;
-    state.touch_activity();
+    host.record_activity();
     Ok(signature)
 }
 
@@ -799,6 +871,8 @@ struct Peer {
     exe: String,
     comm: String,
     cmdline: String,
+    /// Executable of the app the request comes from (see [`Peer::find_app`]).
+    app: String,
 }
 
 impl Peer {
@@ -819,7 +893,9 @@ impl Peer {
             )
         } == 0;
         if ok {
-            Peer::from_pid(cred.pid)
+            let mut peer = Peer::from_pid(cred.pid);
+            peer.app = peer.find_app();
+            peer
         } else {
             Peer::default()
         }
@@ -852,7 +928,25 @@ impl Peer {
             exe,
             comm,
             cmdline,
+            app: String::new(),
         }
+    }
+
+    /// The first ancestor that isn't a shell or an ssh/git wrapper: the
+    /// terminal, editor or tool the person is using. Remembered approvals are
+    /// scoped to it, so approving `ssh` in a terminal doesn't approve every
+    /// other program that runs `ssh`. Read from `exe` links, which a process
+    /// can't rename.
+    fn find_app(&self) -> String {
+        let mut next = self.parent();
+        for _ in 0..16 {
+            let Some(p) = next else { break };
+            if !is_wrapper(&p.exe) {
+                return p.exe;
+            }
+            next = p.parent();
+        }
+        String::new()
     }
 
     fn parent(&self) -> Option<Peer> {
@@ -884,8 +978,26 @@ impl Peer {
                 }
             }
         }
+        let app = Path::new(&self.app)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !app.is_empty() && !who.starts_with(&app) {
+            who = format!("{who} in {app}");
+        }
         who
     }
+}
+
+fn is_wrapper(exe: &str) -> bool {
+    let name = Path::new(exe)
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    matches!(
+        name.as_ref(),
+        "sh" | "bash" | "dash" | "zsh" | "fish" | "nu" | "ssh" | "git" | "ssh-keygen"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,11 +1230,395 @@ mod tests {
     }
 
     #[test]
-    fn approvals_are_per_key_and_program() {
-        let agent = SshAgent::default();
-        agent.approve("fp|/usr/bin/ssh".into());
-        assert!(agent.is_approved("fp|/usr/bin/ssh"));
-        assert!(!agent.is_approved("fp|/usr/bin/git"));
-        assert!(!agent.is_approved("other|/usr/bin/ssh"));
+    fn wrappers_are_skipped_when_finding_the_app() {
+        assert!(is_wrapper("/usr/bin/zsh"));
+        assert!(is_wrapper("/usr/bin/ssh"));
+        assert!(is_wrapper("/usr/bin/git"));
+        assert!(!is_wrapper("/usr/bin/ghostty"));
+        assert!(!is_wrapper("/usr/bin/lazygit"));
+        assert!(!is_wrapper(""));
+        let peer = |comm: &str, app: &str| Peer {
+            comm: comm.into(),
+            app: app.into(),
+            ..Peer::default()
+        };
+        assert_eq!(peer("ssh", "/usr/bin/ghostty").describe(), "ssh in ghostty");
+        assert_eq!(peer("lazygit", "/usr/bin/lazygit").describe(), "lazygit");
+        assert_eq!(peer("ssh", "").describe(), "ssh");
+    }
+
+    #[test]
+    fn find_app_walks_past_shells_to_the_launching_program() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 5; true"])
+            .spawn()
+            .unwrap();
+        let sh = child.id() as i32;
+        let sleep = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                fs::read_to_string(format!("/proc/{sh}/task/{sh}/children"))
+                    .ok()?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<i32>()
+                    .ok()
+            })
+            .unwrap();
+        let app = Peer::from_pid(sleep).find_app();
+        let _ = child.kill();
+        let _ = child.wait();
+        let ours = fs::read_link("/proc/self/exe").unwrap();
+        assert_eq!(app, ours.to_string_lossy());
+    }
+
+    // -- Protocol tests against a fake vault and notification server --------
+
+    /// What the fake notification server does with a prompt.
+    #[derive(Clone, Copy)]
+    enum Notifier {
+        /// Fires this action (Omarchy: "default" on click, "" on dismiss).
+        Answer(&'static str),
+        /// Stays on screen until it expires.
+        Silent,
+        /// notify-send is missing.
+        Unavailable,
+    }
+
+    struct FakeHost {
+        agent: Arc<SshAgent>,
+        unlocked: std::sync::atomic::AtomicBool,
+        keys: Vec<(String, PrivateKey)>,
+        policy: Mutex<Confirm>,
+        notifier: Mutex<Notifier>,
+        activity: AtomicU64,
+        notifications: Mutex<Vec<String>>,
+        overlays: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl FakeHost {
+        fn new(policy: Confirm, notifier: Notifier) -> Arc<FakeHost> {
+            Arc::new(FakeHost {
+                agent: Arc::new(SshAgent {
+                    prompt_timeout: Duration::from_millis(400),
+                    unlock_timeout: Duration::from_millis(400),
+                    ..SshAgent::default()
+                }),
+                unlocked: true.into(),
+                keys: vec![(
+                    "Work".into(),
+                    PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap(),
+                )],
+                policy: Mutex::new(policy),
+                notifier: Mutex::new(notifier),
+                activity: AtomicU64::new(0),
+                notifications: Mutex::new(Vec::new()),
+                overlays: Mutex::new(Vec::new()),
+            })
+        }
+        fn notifications(&self) -> Vec<String> {
+            self.notifications.lock().unwrap().clone()
+        }
+        fn overlays(&self) -> Vec<serde_json::Value> {
+            self.overlays.lock().unwrap().clone()
+        }
+        fn activity(&self) -> u64 {
+            self.activity.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Host for FakeHost {
+        fn agent(&self) -> &Arc<SshAgent> {
+            &self.agent
+        }
+        fn is_unlocked(&self) -> bool {
+            self.unlocked.load(Ordering::SeqCst)
+        }
+        fn keys(&self) -> Vec<AgentKey> {
+            self.keys
+                .iter()
+                .map(|(name, key)| AgentKey {
+                    name: name.clone(),
+                    blob: blob_of(&key.public_key().to_openssh().unwrap()).unwrap(),
+                    fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                    private_key: key.to_openssh(LineEnding::LF).unwrap(),
+                    passphrase: None,
+                })
+                .collect()
+        }
+        fn policy(&self) -> Confirm {
+            *self.policy.lock().unwrap()
+        }
+        fn record_activity(&self) {
+            self.activity.fetch_add(1, Ordering::SeqCst);
+        }
+        fn known_host(&self, _hostkey: &[u8]) -> Option<String> {
+            Some("vps".into())
+        }
+        fn notify(
+            &self,
+            title: &str,
+            _body: &str,
+            _actions: &[(&str, &str)],
+            _timeout: Duration,
+            on_action: Box<dyn FnOnce(&str) + Send>,
+        ) -> bool {
+            let notifier = *self.notifier.lock().unwrap();
+            if matches!(notifier, Notifier::Unavailable) {
+                return false;
+            }
+            self.notifications.lock().unwrap().push(title.into());
+            if let Notifier::Answer(action) = notifier {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    on_action(action);
+                });
+            }
+            true
+        }
+        fn summon_overlay(&self, payload: &serde_json::Value) {
+            self.overlays.lock().unwrap().push(payload.clone());
+        }
+    }
+
+    /// An ssh-like client connected to a fresh agent connection.
+    struct Client(UnixStream);
+
+    impl Client {
+        fn connect(host: &Arc<FakeHost>, exe: &str, app: &str) -> Client {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let host: Arc<dyn Host> = host.clone();
+            let peer = Peer {
+                exe: exe.into(),
+                comm: "ssh".into(),
+                app: app.into(),
+                ..Peer::default()
+            };
+            std::thread::spawn(move || serve(&host, theirs, peer));
+            Client(ours)
+        }
+        fn request(&mut self, kind: u8, body: &[u8]) -> (u8, Vec<u8>) {
+            send(&mut self.0, kind, body).unwrap();
+            let mut len = [0u8; 4];
+            self.0.read_exact(&mut len).unwrap();
+            let mut msg = vec![0u8; u32::from_be_bytes(len) as usize];
+            self.0.read_exact(&mut msg).unwrap();
+            (msg[0], msg[1..].to_vec())
+        }
+        fn identities(&mut self) -> Vec<(Vec<u8>, String)> {
+            let (kind, body) = self.request(REQUEST_IDENTITIES, &[]);
+            assert_eq!(kind, IDENTITIES_ANSWER);
+            let mut r = Reader(&body);
+            (0..r.u32().unwrap())
+                .map(|_| {
+                    let blob = r.string().unwrap().to_vec();
+                    let name = String::from_utf8_lossy(r.string().unwrap()).into_owned();
+                    (blob, name)
+                })
+                .collect()
+        }
+        /// Sign a login challenge with the first key; the signature on success.
+        fn sign(&mut self, host: &FakeHost) -> Option<Vec<u8>> {
+            let blob = host.keys()[0].blob.clone();
+            let mut body = Vec::new();
+            put_string(&mut body, &blob);
+            put_string(&mut body, LOGIN);
+            body.extend_from_slice(&0u32.to_be_bytes());
+            match self.request(SIGN_REQUEST, &body) {
+                (SIGN_RESPONSE, sig) => Some(Reader(&sig).string().unwrap().to_vec()),
+                (FAILURE, _) => None,
+                (kind, _) => panic!("unexpected reply {kind}"),
+            }
+        }
+        fn session_bind(&mut self, forwarding: bool) -> u8 {
+            let mut body = Vec::new();
+            put_string(&mut body, b"session-bind@openssh.com");
+            put_string(&mut body, b"hostkey-blob");
+            put_string(&mut body, b"session-id");
+            put_string(&mut body, b"signature");
+            body.push(forwarding as u8);
+            self.request(EXTENSION, &body).0
+        }
+    }
+
+    const LOGIN: &[u8] =
+        b"\0\0\0\x02id\x32\0\0\0\x04root\0\0\0\x0essh-connection\0\0\0\x09publickey";
+
+    const SSH: &str = "/usr/bin/ssh";
+    const TERMINAL: &str = "/usr/bin/ghostty";
+
+    #[test]
+    fn signatures_verify_and_count_as_activity_but_listing_does_not() {
+        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        let ids = c.identities();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0].1, "Work");
+        assert_eq!(
+            host.activity(),
+            0,
+            "listing keys must not keep the vault awake"
+        );
+
+        let sig = c.sign(&host).expect("never policy signs without asking");
+        verify(&host.keys[0].1, LOGIN, &sig);
+        assert_eq!(host.activity(), 1);
+        assert!(host.notifications().is_empty());
+    }
+
+    #[test]
+    fn first_use_asks_once_per_key_program_and_app() {
+        let host = FakeHost::new(Confirm::FirstUse, Notifier::Answer("approve"));
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        assert!(c.sign(&host).is_some());
+        assert!(c.sign(&host).is_some());
+        assert_eq!(host.notifications().len(), 1, "second use is remembered");
+
+        // Same terminal, new connection: still remembered.
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
+        assert_eq!(host.notifications().len(), 1);
+
+        // The same ssh binary run by another app asks again.
+        assert!(Client::connect(&host, SSH, "/usr/bin/python3")
+            .sign(&host)
+            .is_some());
+        assert_eq!(host.notifications().len(), 2);
+    }
+
+    #[test]
+    fn locking_the_vault_keeps_first_use_approvals() {
+        let host = FakeHost::new(Confirm::FirstUse, Notifier::Answer("approve"));
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
+        host.unlocked.store(false, Ordering::SeqCst);
+        let h = host.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            h.unlocked.store(true, Ordering::SeqCst);
+        });
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
+        let titles = host.notifications();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(
+            titles[1], "Vault locked",
+            "only the unlock prompt, no re-approval"
+        );
+    }
+
+    #[test]
+    fn always_asks_every_time_and_deny_refuses() {
+        let host = FakeHost::new(Confirm::Always, Notifier::Answer("approve"));
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        assert!(c.sign(&host).is_some());
+        assert!(c.sign(&host).is_some());
+        assert_eq!(host.notifications().len(), 2);
+
+        *host.notifier.lock().unwrap() = Notifier::Answer("deny");
+        assert!(c.sign(&host).is_none());
+        assert_eq!(host.activity(), 2, "a refused signature is not activity");
+    }
+
+    #[test]
+    fn forwarded_requests_always_ask_and_are_never_remembered() {
+        let host = FakeHost::new(Confirm::Never, Notifier::Answer("approve"));
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        assert_eq!(c.session_bind(true), SUCCESS);
+        assert!(c.sign(&host).is_some());
+        assert_eq!(host.notifications(), vec!["Log in to vps?".to_string()]);
+
+        *host.policy.lock().unwrap() = Confirm::FirstUse;
+        assert!(c.sign(&host).is_some());
+        assert!(c.sign(&host).is_some());
+        assert_eq!(host.notifications().len(), 3);
+        assert!(!host.agent.approvals.lock().unwrap().iter().any(|_| true));
+
+        // A later non-forwarding bind on the same connection doesn't clear it.
+        assert_eq!(c.session_bind(false), SUCCESS);
+        assert!(c.sign(&host).is_some());
+        assert_eq!(host.notifications().len(), 4);
+    }
+
+    #[test]
+    fn dismissing_a_notification_is_not_a_denial() {
+        let host = FakeHost::new(Confirm::Always, Notifier::Answer(""));
+        let h = host.clone();
+        let approver = std::thread::spawn(move || loop {
+            if let Some(p) = h.agent.pending().first() {
+                // Answered later from the overlay card.
+                std::thread::sleep(Duration::from_millis(100));
+                return h.agent.reply(p.id, Decision { approve: true });
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        });
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
+        assert!(approver.join().unwrap());
+    }
+
+    #[test]
+    fn clicking_a_notification_opens_the_approval_card() {
+        let host = FakeHost::new(Confirm::Always, Notifier::Answer("default"));
+        // Nobody answers the card: the prompt times out and is refused.
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_none());
+        let overlays = host.overlays();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0]["view"], "ssh-approval");
+        assert!(
+            host.agent.pending().is_empty(),
+            "timed-out prompts are removed"
+        );
+    }
+
+    #[test]
+    fn without_notifications_the_card_opens_directly() {
+        let host = FakeHost::new(Confirm::Always, Notifier::Unavailable);
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_none());
+        assert_eq!(host.overlays()[0]["view"], "ssh-approval");
+    }
+
+    #[test]
+    fn locked_vault_prompts_once_and_gives_up_after_the_timeout() {
+        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        host.unlocked.store(false, Ordering::SeqCst);
+        let clients: Vec<_> = (0..3)
+            .map(|_| {
+                let h = host.clone();
+                std::thread::spawn(move || Client::connect(&h, SSH, TERMINAL).identities())
+            })
+            .collect();
+        for c in clients {
+            assert!(c.join().unwrap().is_empty(), "no keys while locked");
+        }
+        assert_eq!(host.notifications(), vec!["Vault locked".to_string()]);
+        assert_eq!(host.overlays().len(), 1);
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_none());
+    }
+
+    #[test]
+    fn key_management_and_unknown_requests_are_refused() {
+        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        for kind in [17u8, 18, 19, 22, 23] {
+            // add, remove, remove-all, lock, unlock
+            assert_eq!(c.request(kind, &[]).0, FAILURE);
+        }
+        let mut ext = Vec::new();
+        put_string(&mut ext, b"unknown@example.com");
+        assert_eq!(c.request(EXTENSION, &ext).0, EXTENSION_FAILURE);
+
+        let mut bogus = Vec::new();
+        put_string(&mut bogus, b"not-a-key");
+        put_string(&mut bogus, b"data");
+        assert_eq!(c.request(SIGN_REQUEST, &bogus).0, FAILURE);
+        // Still usable afterwards.
+        assert_eq!(c.identities().len(), 1);
+    }
+
+    #[test]
+    fn oversized_messages_close_the_connection() {
+        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let mut c = Client::connect(&host, SSH, TERMINAL);
+        c.0.write_all(&((MAX_MESSAGE as u32) + 1).to_be_bytes())
+            .unwrap();
+        let mut buf = [0u8; 1];
+        assert_eq!(c.0.read(&mut buf).unwrap(), 0);
     }
 }
