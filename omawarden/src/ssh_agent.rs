@@ -244,21 +244,25 @@ fn ask(host: &Arc<dyn Host>, mut prompt: Prompt) -> Decision {
     decision
 }
 
-/// Notification text for a pending signature.
+/// Notification text for a pending signature. The body is three short lines,
+/// since Omarchy's card shows no more, and is escaped because servers treat
+/// it as markup.
 fn notification_text(p: &Prompt) -> (String, String) {
-    let mut body = format!(
-        "{} \u{2014} key \"{}\"\nRequested by {}",
-        p.action, p.key_name, p.client
-    );
-    if p.forwarded {
-        body.push_str("\nForwarded from a remote host");
+    let hint = if p.forwarded {
+        "Forwarded from a remote host"
     } else if p.remembered {
-        body.push_str(&format!(
-            "\nApproval is remembered for {} until you log out",
-            p.client
-        ));
-    }
-    (p.title.clone(), body)
+        "Click to review \u{b7} remembered until logout"
+    } else {
+        "Click to review"
+    };
+    let body = format!("{}\n{} \u{b7} {}\n{}", p.action, p.key_name, p.client, hint);
+    (p.title.clone(), escape_markup(&body))
+}
+
+fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Show a system notification with action buttons and hand the chosen action
@@ -274,7 +278,10 @@ fn notify(
     let mut cmd = std::process::Command::new("notify-send");
     cmd.args([
         "--app-name=Bitwarden",
-        "--icon=dialog-password",
+        // A Nerd Font key, drawn by Omarchy in the icon slot. Its card shows a
+        // broken-image placeholder for theme icons it can't find, such as
+        // `dialog-password` under Yaru, and a found icon would hide the glyph.
+        "--hint=string:omarchy-glyph:\u{f0306}",
         "--urgency=critical",
     ])
     .arg(format!("--expire-time={}", timeout.as_millis()));
@@ -1063,10 +1070,16 @@ mod tests {
         };
         let (title, body) = notification_text(&p);
         assert_eq!(title, "Log in to github.com?");
-        assert!(body.contains("git@github.com") && body.contains("\"Work\""));
-        assert!(body.contains("until you log out"));
+        assert_eq!(
+            body,
+            "SSH login as git@github.com\nWork \u{b7} git (ssh)\nClick to review \u{b7} remembered until logout"
+        );
+        p.remembered = false;
+        assert!(notification_text(&p).1.ends_with("\nClick to review"));
         p.forwarded = true;
         assert!(notification_text(&p).1.contains("Forwarded"));
+        p.key_name = "<b>&".into();
+        assert!(notification_text(&p).1.contains("&lt;b&gt;&amp;"));
     }
 
     #[test]
