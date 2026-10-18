@@ -358,7 +358,7 @@ impl KeyringManager {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use tempfile::tempdir;
 
     #[test]
@@ -424,10 +424,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mgr = KeyringManager::new(script_path.to_str().unwrap());
         assert!(mgr.is_available());
@@ -547,10 +544,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mgr = KeyringManager::new(script_path.to_str().unwrap());
         let server_url = "https://vault.bitwarden.com";
@@ -636,10 +630,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mgr = KeyringManager::new(script_path.to_str().unwrap());
         let server_a = "https://server-a.com";
@@ -758,10 +749,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mgr = KeyringManager::new(script_path.to_str().unwrap());
 

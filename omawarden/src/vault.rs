@@ -1775,7 +1775,7 @@ mod tests {
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1883,10 +1883,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -1946,7 +1943,7 @@ esac
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2031,10 +2028,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -2100,7 +2094,6 @@ esac
     #[test]
     fn test_vault_sync_network_error_preserves_tokens() {
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("vault_reauth_net_fail.json");
@@ -2159,10 +2152,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -2210,7 +2200,7 @@ esac
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2289,10 +2279,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 

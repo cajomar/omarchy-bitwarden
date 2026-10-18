@@ -1373,11 +1373,9 @@ mod tests {
         assert!(!is_same_origin("https://vault.example.com:8443", base));
     }
 
-    static ATTACHMENT_ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn test_attachment_download_rejects_oversized_advertised_content_length() {
-        let _lock = ATTACHMENT_ENV_TEST_MUTEX.lock().unwrap();
+        let _lock = crate::env_lock();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1439,7 +1437,7 @@ mod tests {
 
     #[test]
     fn test_attachment_download_rejects_stream_overflow() {
-        let _lock = ATTACHMENT_ENV_TEST_MUTEX.lock().unwrap();
+        let _lock = crate::env_lock();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

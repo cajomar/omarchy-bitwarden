@@ -563,14 +563,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            let _ = fs::set_permissions(&script_path, perms);
-        }
+        crate::write_test_executable(&script_path, script);
         script_path.to_str().unwrap().to_string()
     }
 
