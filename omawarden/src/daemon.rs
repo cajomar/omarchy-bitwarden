@@ -20,13 +20,20 @@ use std::os::unix::process::CommandExt;
 /// Precedence:
 /// 1. `XDG_RUNTIME_DIR`: Verified to exist, owned by current UID, and not a symlink.
 /// 2. Fallback: Creates an isolated `/tmp/omawarden-runtime-{uid}/` directory with mode `0700`.
+///
+/// Tests never resolve to the login session's `/run/user/{uid}`: some send `stop`
+/// or start a daemon, which would lock the user's real vault and drop their SSH agent.
 pub fn get_runtime_dir() -> PathBuf {
     let current_uid = unsafe { libc::getuid() };
 
     if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(runtime_dir);
+        let is_session_dir = p == Path::new(&format!("/run/user/{}", current_uid));
         if let Ok(meta) = fs::symlink_metadata(&p) {
-            if !meta.file_type().is_symlink() && meta.uid() == current_uid {
+            if !meta.file_type().is_symlink()
+                && meta.uid() == current_uid
+                && !(cfg!(test) && is_session_dir)
+            {
                 return p;
             }
         }
