@@ -37,6 +37,29 @@ Item {
     modal.replyRequested(false)
     check(replies.length === 2 && replies[0] === true && replies[1] === false, "replyRequested carries the decision")
 
-    Qt.exit(failures === 0 ? 0 : 1)
+    // The card opens by itself: Allow is ignored until it has been up briefly
+    replies = []
+    check(modal.armed === false, "a new prompt starts unarmed")
+    modal.allow()
+    check(replies.length === 0, "allow is ignored before arming")
+    armWait.start()
+  }
+
+  Timer {
+    id: armWait
+    interval: 800
+    onTriggered: {
+      check(modal.armed === true, "armed after the delay")
+      // A polling refresh of the same prompt doesn't re-arm
+      modal.prompt = Object.assign({}, modal.prompt)
+      check(modal.armed === true, "refreshing the same prompt keeps it armed")
+      modal.allow()
+      check(replies.length === 1 && replies[0] === true, "allow approves once armed")
+
+      // A different prompt starts unarmed again
+      modal.prompt = Object.assign({}, modal.prompt, { id: 3 })
+      check(modal.armed === false, "a new prompt re-arms")
+      Qt.exit(failures === 0 ? 0 : 1)
+    }
   }
 }

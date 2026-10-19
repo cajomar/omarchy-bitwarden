@@ -192,35 +192,27 @@ fn ask(host: &Arc<dyn Host>, mut prompt: Prompt) -> Decision {
             },
         );
     }
-    // A system notification. Servers that render buttons get Approve and
-    // Deny; Omarchy's only fires "default" on click, which opens the overlay
-    // card. Dismissing or expiring answers nothing: the prompt stays pending
-    // (and answerable in the overlay) until it times out.
-    let h = host.clone();
-    let spawned = host.notify(
-        &title,
-        &body,
-        &[
-            ("default", "Review"),
-            ("approve", "Approve"),
-            ("deny", "Deny"),
-        ],
-        agent.prompt_timeout,
-        Box::new(move |action| match action {
-            "approve" | "deny" => {
-                h.agent().reply(
-                    id,
-                    Decision {
-                        approve: action == "approve",
-                    },
-                );
-            }
-            "default" => h.summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id })),
-            _ => {}
-        }),
-    );
-    if !spawned {
-        host.summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id }));
+    // Open the approval card straight away, like a polkit prompt: a
+    // notification is too easy to miss. Without the shell, fall back to a
+    // notification for servers that render Approve and Deny buttons.
+    if !host.summon_overlay(&serde_json::json!({ "view": "ssh-approval", "id": id })) {
+        let h = host.clone();
+        host.notify(
+            &title,
+            &body,
+            &[("approve", "Approve"), ("deny", "Deny")],
+            agent.prompt_timeout,
+            Box::new(move |action| {
+                if let "approve" | "deny" = action {
+                    h.agent().reply(
+                        id,
+                        Decision {
+                            approve: action == "approve",
+                        },
+                    );
+                }
+            }),
+        );
     }
 
     let deadline = Instant::now() + agent.prompt_timeout;
@@ -244,18 +236,16 @@ fn ask(host: &Arc<dyn Host>, mut prompt: Prompt) -> Decision {
     decision
 }
 
-/// Notification text for a pending signature. The body is three short lines,
-/// since Omarchy's card shows no more, and is escaped because servers treat
-/// it as markup.
+/// Notification text for a pending signature, used when the approval card
+/// can't be shown. At most three short lines, since Omarchy's card shows no
+/// more, escaped because servers treat the body as markup.
 fn notification_text(p: &Prompt) -> (String, String) {
-    let hint = if p.forwarded {
-        "Forwarded from a remote host"
+    let mut body = format!("{}\n{} \u{b7} {}", p.action, p.key_name, p.client);
+    if p.forwarded {
+        body.push_str("\nForwarded from a remote host");
     } else if p.remembered {
-        "Click to review \u{b7} remembered until logout"
-    } else {
-        "Click to review"
-    };
-    let body = format!("{}\n{} \u{b7} {}\n{}", p.action, p.key_name, p.client, hint);
+        body.push_str("\nRemembered until logout");
+    }
     (p.title.clone(), escape_markup(&body))
 }
 
@@ -306,26 +296,27 @@ fn notify(
     true
 }
 
-/// Open the Omarchy Bitwarden overlay (for a prompt, or to unlock).
-fn summon_overlay(payload: &serde_json::Value) {
+/// Open the Omarchy Bitwarden overlay (for a prompt, or to unlock). Returns
+/// whether the shell opened it; it answers "ok" when it did.
+fn summon_overlay(payload: &serde_json::Value) -> bool {
     let Some(shell) = crate::daemon::get_omarchy_shell_cmd() else {
         crate::log_warn!(
             "omawarden:ssh-agent",
             "omarchy-shell not found; cannot show the confirmation prompt"
         );
-        return;
+        return false;
     };
     let result = std::process::Command::new(shell)
         .args(["shell", "summon", "icyleaf.bitwarden", &payload.to_string()])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .output();
     match result {
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
+        Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok",
+        Err(e) => {
+            crate::log_warn!("omawarden:ssh-agent", "could not summon the overlay: {}", e);
+            false
         }
-        Err(e) => crate::log_warn!("omawarden:ssh-agent", "could not summon the overlay: {}", e),
     }
 }
 
@@ -352,7 +343,8 @@ trait Host: Send + Sync + 'static {
         timeout: Duration,
         on_action: Box<dyn FnOnce(&str) + Send>,
     ) -> bool;
-    fn summon_overlay(&self, payload: &serde_json::Value);
+    /// See [`summon_overlay`].
+    fn summon_overlay(&self, payload: &serde_json::Value) -> bool;
 }
 
 impl Host for DaemonState {
@@ -388,7 +380,7 @@ impl Host for DaemonState {
     ) -> bool {
         notify(title, body, actions, timeout, on_action)
     }
-    fn summon_overlay(&self, payload: &serde_json::Value) {
+    fn summon_overlay(&self, payload: &serde_json::Value) -> bool {
         summon_overlay(payload)
     }
 }
@@ -1072,10 +1064,10 @@ mod tests {
         assert_eq!(title, "Log in to github.com?");
         assert_eq!(
             body,
-            "SSH login as git@github.com\nWork \u{b7} git (ssh)\nClick to review \u{b7} remembered until logout"
+            "SSH login as git@github.com\nWork \u{b7} git (ssh)\nRemembered until logout"
         );
         p.remembered = false;
-        assert!(notification_text(&p).1.ends_with("\nClick to review"));
+        assert!(notification_text(&p).1.ends_with("\nWork \u{b7} git (ssh)"));
         p.forwarded = true;
         assert!(notification_text(&p).1.contains("Forwarded"));
         p.key_name = "<b>&".into();
@@ -1285,16 +1277,16 @@ mod tests {
         assert_eq!(app, ours.to_string_lossy());
     }
 
-    // -- Protocol tests against a fake vault and notification server --------
+    // -- Protocol tests against a fake vault and desktop ---------------------
 
-    /// What the fake notification server does with a prompt.
+    /// What the person at the fake desktop does with an approval card.
     #[derive(Clone, Copy)]
-    enum Notifier {
-        /// Fires this action (Omarchy: "default" on click, "" on dismiss).
-        Answer(&'static str),
-        /// Stays on screen until it expires.
-        Silent,
-        /// notify-send is missing.
+    enum Card {
+        Approve,
+        Deny,
+        /// Leaves it on screen until it times out.
+        Ignore,
+        /// The shell isn't running, so the card can't open.
         Unavailable,
     }
 
@@ -1303,14 +1295,14 @@ mod tests {
         unlocked: std::sync::atomic::AtomicBool,
         keys: Vec<(String, PrivateKey)>,
         policy: Mutex<Confirm>,
-        notifier: Mutex<Notifier>,
+        card: Mutex<Card>,
         activity: AtomicU64,
         notifications: Mutex<Vec<String>>,
         overlays: Mutex<Vec<serde_json::Value>>,
     }
 
     impl FakeHost {
-        fn new(policy: Confirm, notifier: Notifier) -> Arc<FakeHost> {
+        fn new(policy: Confirm, card: Card) -> Arc<FakeHost> {
             Arc::new(FakeHost {
                 agent: Arc::new(SshAgent {
                     prompt_timeout: Duration::from_millis(400),
@@ -1323,7 +1315,7 @@ mod tests {
                     PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap(),
                 )],
                 policy: Mutex::new(policy),
-                notifier: Mutex::new(notifier),
+                card: Mutex::new(card),
                 activity: AtomicU64::new(0),
                 notifications: Mutex::new(Vec::new()),
                 overlays: Mutex::new(Vec::new()),
@@ -1334,6 +1326,13 @@ mod tests {
         }
         fn overlays(&self) -> Vec<serde_json::Value> {
             self.overlays.lock().unwrap().clone()
+        }
+        /// Approval cards opened so far.
+        fn cards(&self) -> usize {
+            self.overlays()
+                .iter()
+                .filter(|o| o["view"] == "ssh-approval")
+                .count()
         }
         fn activity(&self) -> u64 {
             self.activity.load(Ordering::SeqCst)
@@ -1374,23 +1373,30 @@ mod tests {
             _body: &str,
             _actions: &[(&str, &str)],
             _timeout: Duration,
-            on_action: Box<dyn FnOnce(&str) + Send>,
+            _on_action: Box<dyn FnOnce(&str) + Send>,
         ) -> bool {
-            let notifier = *self.notifier.lock().unwrap();
-            if matches!(notifier, Notifier::Unavailable) {
+            self.notifications.lock().unwrap().push(title.into());
+            true
+        }
+        fn summon_overlay(&self, payload: &serde_json::Value) -> bool {
+            let card = *self.card.lock().unwrap();
+            if matches!(card, Card::Unavailable) {
                 return false;
             }
-            self.notifications.lock().unwrap().push(title.into());
-            if let Notifier::Answer(action) = notifier {
+            self.overlays.lock().unwrap().push(payload.clone());
+            if let (Some(id), Card::Approve | Card::Deny) = (payload["id"].as_u64(), card) {
+                let agent = self.agent.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(20));
-                    on_action(action);
+                    agent.reply(
+                        id,
+                        Decision {
+                            approve: matches!(card, Card::Approve),
+                        },
+                    );
                 });
             }
             true
-        }
-        fn summon_overlay(&self, payload: &serde_json::Value) {
-            self.overlays.lock().unwrap().push(payload.clone());
         }
     }
 
@@ -1462,7 +1468,7 @@ mod tests {
 
     #[test]
     fn signatures_verify_and_count_as_activity_but_listing_does_not() {
-        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let host = FakeHost::new(Confirm::Never, Card::Ignore);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         let ids = c.identities();
         assert_eq!(ids.len(), 1);
@@ -1476,31 +1482,35 @@ mod tests {
         let sig = c.sign(&host).expect("never policy signs without asking");
         verify(&host.keys[0].1, LOGIN, &sig);
         assert_eq!(host.activity(), 1);
-        assert!(host.notifications().is_empty());
+        assert_eq!(host.cards(), 0);
     }
 
     #[test]
     fn first_use_asks_once_per_key_program_and_app() {
-        let host = FakeHost::new(Confirm::FirstUse, Notifier::Answer("approve"));
+        let host = FakeHost::new(Confirm::FirstUse, Card::Approve);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         assert!(c.sign(&host).is_some());
         assert!(c.sign(&host).is_some());
-        assert_eq!(host.notifications().len(), 1, "second use is remembered");
+        assert_eq!(host.cards(), 1, "second use is remembered");
 
         // Same terminal, new connection: still remembered.
         assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
-        assert_eq!(host.notifications().len(), 1);
+        assert_eq!(host.cards(), 1);
 
         // The same ssh binary run by another app asks again.
         assert!(Client::connect(&host, SSH, "/usr/bin/python3")
             .sign(&host)
             .is_some());
-        assert_eq!(host.notifications().len(), 2);
+        assert_eq!(host.cards(), 2);
+        assert!(
+            host.notifications().is_empty(),
+            "the card replaces the notification"
+        );
     }
 
     #[test]
     fn locking_the_vault_keeps_first_use_approvals() {
-        let host = FakeHost::new(Confirm::FirstUse, Notifier::Answer("approve"));
+        let host = FakeHost::new(Confirm::FirstUse, Card::Approve);
         assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
         host.unlocked.store(false, Ordering::SeqCst);
         let h = host.clone();
@@ -1509,71 +1519,52 @@ mod tests {
             h.unlocked.store(true, Ordering::SeqCst);
         });
         assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
-        let titles = host.notifications();
-        assert_eq!(titles.len(), 2);
-        assert_eq!(
-            titles[1], "Vault locked",
-            "only the unlock prompt, no re-approval"
-        );
+        assert_eq!(host.cards(), 1, "no re-approval");
+        assert_eq!(host.notifications(), vec!["Vault locked".to_string()]);
     }
 
     #[test]
     fn always_asks_every_time_and_deny_refuses() {
-        let host = FakeHost::new(Confirm::Always, Notifier::Answer("approve"));
+        let host = FakeHost::new(Confirm::Always, Card::Approve);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         assert!(c.sign(&host).is_some());
         assert!(c.sign(&host).is_some());
-        assert_eq!(host.notifications().len(), 2);
+        assert_eq!(host.cards(), 2);
 
-        *host.notifier.lock().unwrap() = Notifier::Answer("deny");
+        *host.card.lock().unwrap() = Card::Deny;
         assert!(c.sign(&host).is_none());
         assert_eq!(host.activity(), 2, "a refused signature is not activity");
     }
 
     #[test]
     fn forwarded_requests_always_ask_and_are_never_remembered() {
-        let host = FakeHost::new(Confirm::Never, Notifier::Answer("approve"));
+        let host = FakeHost::new(Confirm::Never, Card::Approve);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         assert_eq!(c.session_bind(true), SUCCESS);
         assert!(c.sign(&host).is_some());
-        assert_eq!(host.notifications(), vec!["Log in to vps?".to_string()]);
+        assert_eq!(host.cards(), 1);
 
         *host.policy.lock().unwrap() = Confirm::FirstUse;
         assert!(c.sign(&host).is_some());
         assert!(c.sign(&host).is_some());
-        assert_eq!(host.notifications().len(), 3);
+        assert_eq!(host.cards(), 3);
         assert!(!host.agent.approvals.lock().unwrap().iter().any(|_| true));
 
         // A later non-forwarding bind on the same connection doesn't clear it.
         assert_eq!(c.session_bind(false), SUCCESS);
         assert!(c.sign(&host).is_some());
-        assert_eq!(host.notifications().len(), 4);
+        assert_eq!(host.cards(), 4);
     }
 
     #[test]
-    fn dismissing_a_notification_is_not_a_denial() {
-        let host = FakeHost::new(Confirm::Always, Notifier::Answer(""));
-        let h = host.clone();
-        let approver = std::thread::spawn(move || loop {
-            if let Some(p) = h.agent.pending().first() {
-                // Answered later from the overlay card.
-                std::thread::sleep(Duration::from_millis(100));
-                return h.agent.reply(p.id, Decision { approve: true });
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        });
-        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
-        assert!(approver.join().unwrap());
-    }
-
-    #[test]
-    fn clicking_a_notification_opens_the_approval_card() {
-        let host = FakeHost::new(Confirm::Always, Notifier::Answer("default"));
+    fn the_approval_card_opens_without_a_notification() {
+        let host = FakeHost::new(Confirm::Always, Card::Ignore);
         // Nobody answers the card: the prompt times out and is refused.
         assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_none());
         let overlays = host.overlays();
         assert_eq!(overlays.len(), 1);
         assert_eq!(overlays[0]["view"], "ssh-approval");
+        assert!(host.notifications().is_empty());
         assert!(
             host.agent.pending().is_empty(),
             "timed-out prompts are removed"
@@ -1581,15 +1572,24 @@ mod tests {
     }
 
     #[test]
-    fn without_notifications_the_card_opens_directly() {
-        let host = FakeHost::new(Confirm::Always, Notifier::Unavailable);
-        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_none());
-        assert_eq!(host.overlays()[0]["view"], "ssh-approval");
+    fn without_the_shell_a_notification_asks_instead() {
+        let host = FakeHost::new(Confirm::Always, Card::Unavailable);
+        let h = host.clone();
+        let approver = std::thread::spawn(move || loop {
+            if let Some(p) = h.agent.pending().first() {
+                // Answered from the notification's Approve button.
+                return h.agent.reply(p.id, Decision { approve: true });
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        });
+        assert!(Client::connect(&host, SSH, TERMINAL).sign(&host).is_some());
+        assert!(approver.join().unwrap());
+        assert_eq!(host.notifications().len(), 1);
     }
 
     #[test]
     fn locked_vault_prompts_once_and_gives_up_after_the_timeout() {
-        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let host = FakeHost::new(Confirm::Never, Card::Ignore);
         host.unlocked.store(false, Ordering::SeqCst);
         let clients: Vec<_> = (0..3)
             .map(|_| {
@@ -1607,7 +1607,7 @@ mod tests {
 
     #[test]
     fn key_management_and_unknown_requests_are_refused() {
-        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let host = FakeHost::new(Confirm::Never, Card::Ignore);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         for kind in [17u8, 18, 19, 22, 23] {
             // add, remove, remove-all, lock, unlock
@@ -1627,7 +1627,7 @@ mod tests {
 
     #[test]
     fn oversized_messages_close_the_connection() {
-        let host = FakeHost::new(Confirm::Never, Notifier::Silent);
+        let host = FakeHost::new(Confirm::Never, Card::Ignore);
         let mut c = Client::connect(&host, SSH, TERMINAL);
         c.0.write_all(&((MAX_MESSAGE as u32) + 1).to_be_bytes())
             .unwrap();

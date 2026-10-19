@@ -16,6 +16,9 @@ Rectangle {
   property color accent: "#3b82f6"
   property color borderColor: Qt.rgba(1, 1, 1, 0.1)
   property string fontFamily: ""
+  // The card opens by itself, possibly mid-typing: hold off Allow briefly so
+  // an Enter meant for another window can't approve.
+  property bool armed: false
 
   readonly property color mutedForeground: Qt.darker(foreground, 1.5)
   readonly property color dangerColor: "#f87171"
@@ -32,13 +35,34 @@ Rectangle {
       approvalRoot.replyRequested(false)
       event.accepted = true
     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-      approvalRoot.replyRequested(true)
+      approvalRoot.allow()
       event.accepted = true
     }
   }
 
-  onVisibleChanged: if (visible) approvalRoot.forceActiveFocus()
-  onPromptChanged: if (visible) approvalRoot.forceActiveFocus()
+  // Id of the prompt on screen, so polling refreshes of it don't re-arm.
+  property var shownId: null
+
+  function allow() {
+    if (armed) replyRequested(true)
+  }
+
+  function present() {
+    approvalRoot.forceActiveFocus()
+    if (prompt.id === shownId) return
+    shownId = prompt.id
+    armed = false
+    armTimer.restart()
+  }
+
+  onVisibleChanged: visible ? approvalRoot.present() : (shownId = null)
+  onPromptChanged: if (visible) approvalRoot.present()
+
+  Timer {
+    id: armTimer
+    interval: 600
+    onTriggered: approvalRoot.armed = true
+  }
 
   // Clicking outside denies, like Esc: a stray click must never approve.
   MouseArea {
@@ -223,6 +247,7 @@ Rectangle {
           implicitHeight: 28
           implicitWidth: 80
           radius: 4
+          opacity: approvalRoot.armed ? 1 : 0.4
           color: allowMouse.containsMouse ? Qt.lighter(approvalRoot.accent, 1.1) : approvalRoot.accent
           Text {
             anchors.centerIn: parent
@@ -236,7 +261,7 @@ Rectangle {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: approvalRoot.replyRequested(true)
+            onClicked: approvalRoot.allow()
           }
         }
       }
