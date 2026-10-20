@@ -12,6 +12,8 @@ on:
       - ci/*
       - refactor/*
     paths:
+      - "*.qml"
+      - "components/**"
       - "omawarden/**"
       - "scripts/**"
       - "tests/**"
@@ -21,14 +23,16 @@ on:
       - main
       - develop
     paths:
+      - "*.qml"
+      - "components/**"
       - "omawarden/**"
       - "scripts/**"
       - "tests/**"
       - ".github/workflows/ci.yml"
 
 jobs:
-  test:
-    name: Test & Lint
+  backend:
+    name: Backend Test & Lint
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -60,3 +64,40 @@ jobs:
 
       - name: Run test suite
         run: cargo test --all-targets
+
+  frontend:
+    name: Frontend Lint & Workflow Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-declarative-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtqml
+          QMLLINT_BIN=$(find /usr -name qmllint -type f -executable 2>/dev/null | head -n 1)
+          if [ -n "$QMLLINT_BIN" ]; then
+            sudo ln -sf "$QMLLINT_BIN" /usr/local/bin/qmllint
+          fi
+
+      - name: Run QML lint
+        run: |
+          qmllint --version
+          qmllint OmarchyBitwarden.qml components/*.qml > qmllint_output.log 2>&1 || true
+          cat qmllint_output.log
+          if grep -i -E "(\bError:|\berror:|\bfatal:)" qmllint_output.log; then
+            echo "::error::qmllint detected syntax or parser errors!"
+            exit 1
+          fi
+          echo "QML lint check passed with zero syntax errors."
+
+      - name: Run workflow action pinning check
+        run: python3 tests/test_workflow_action_pinning.py

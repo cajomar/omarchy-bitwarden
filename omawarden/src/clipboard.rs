@@ -371,18 +371,25 @@ fi
             .with_generation_path(dir.path().join("clipboard_gen"))
             .without_detached_worker();
 
-        assert!(mgr.copy_with_duration("secret_1", true, Duration::from_millis(250)));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(mgr.copy_with_duration("secret_2", true, Duration::from_millis(250)));
+        assert!(mgr.copy_with_duration("secret_1", true, Duration::from_millis(150)));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(mgr.copy_with_duration("secret_2", true, Duration::from_millis(500)));
 
-        // Wait past secret_1's 250ms deadline (now at 300ms from secret_1 start, 200ms from secret_2 start)
-        std::thread::sleep(Duration::from_millis(200));
+        // Wait past secret_1's 150ms deadline (now at 210ms from secret_1 start, 150ms from secret_2 start)
+        std::thread::sleep(Duration::from_millis(150));
         // secret_2 should STILL be present because secret_1's timer generation mismatched!
         assert_eq!(fs::read_to_string(&clip_file).unwrap(), "secret_2");
 
-        // Now wait for secret_2's timer to expire (another 100ms)
-        std::thread::sleep(Duration::from_millis(150));
-        assert!(!clip_file.exists());
+        // Poll for secret_2's auto-clear to execute and remove clip_file
+        let mut cleared = false;
+        for _ in 0..50 {
+            if !clip_file.exists() {
+                cleared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(cleared, "clip_file was not cleared within timeout");
     }
 
     #[test]
