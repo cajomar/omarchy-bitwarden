@@ -326,14 +326,6 @@ impl ConfigManager {
                 cfg.client_cert_server = None;
             } else {
                 cfg.client_cert_path = Some(trimmed.to_string());
-                if let Some(ref key_path) = options.client_key_path {
-                    let trimmed_key = key_path.trim();
-                    if trimmed_key.is_empty() {
-                        cfg.client_key_path = None;
-                    } else {
-                        cfg.client_key_path = Some(trimmed_key.to_string());
-                    }
-                }
                 // Automatically bind client_cert_server to the RFC 6454 origin of server_url
                 if let Ok(u) = url::Url::parse(&cfg.server_url) {
                     let port_suffix = match u.port() {
@@ -350,7 +342,9 @@ impl ConfigManager {
                     cfg.client_cert_server = Some(cfg.server_url.clone());
                 }
             }
-        } else if let Some(ref key_path) = options.client_key_path {
+        }
+
+        if let Some(ref key_path) = options.client_key_path {
             let trimmed_key = key_path.trim();
             if trimmed_key.is_empty() {
                 cfg.client_key_path = None;

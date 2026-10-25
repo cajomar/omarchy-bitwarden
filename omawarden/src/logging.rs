@@ -48,7 +48,7 @@ pub fn sanitize_log_message(msg: &str) -> String {
             .unwrap()
     });
     let secret_re = SECRET_RE.get_or_init(|| {
-        Regex::new(r#"(?i)("client_secret"|"clientSecret"|"userKey"|"privateKey"|"clientKey")\s*:\s*"[^"]*""#)
+        Regex::new(r#"(?i)("client_secret"|"clientSecret"|"userKey"|"privateKey"|"clientKey"|"client_key")\s*:\s*"[^"]*""#)
             .unwrap()
     });
     let code_re = CODE_RE.get_or_init(|| {

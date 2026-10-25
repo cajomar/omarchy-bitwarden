@@ -557,27 +557,50 @@ pub fn validate_private_key_permissions(_path: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Validates that the private key within PEM bytes satisfies minimum cryptographic strength (e.g. RSA >= 2048 bits).
+fn check_rsa_key_strength(key: &rsa::RsaPrivateKey) -> Result<(), ApiError> {
+    use rsa::traits::PublicKeyParts;
+    let bits = key.size() * 8;
+    if bits < 2048 {
+        return Err(ApiError::Crypto(format!(
+            "RSA client key length ({} bits) is below minimum safe threshold (2048 bits)",
+            bits
+        )));
+    }
+    Ok(())
+}
+
+/// Validates that the private key within PEM bytes satisfies minimum cryptographic strength (e.g. RSA >= 2048 bits, EC scalar >= 256 bits).
 pub fn validate_client_key_strength(pem_bytes: &[u8]) -> Result<(), ApiError> {
     use rsa::pkcs1::DecodeRsaPrivateKey;
     use rsa::pkcs8::DecodePrivateKey;
-    use rsa::traits::PublicKeyParts;
 
-    let pem_str = match std::str::from_utf8(pem_bytes) {
-        Ok(s) => s,
-        Err(_) => return Ok(()),
-    };
+    let pem_str = std::str::from_utf8(pem_bytes).map_err(|e| {
+        ApiError::Crypto(format!(
+            "Client private key file is not valid UTF-8 PEM: {}",
+            e
+        ))
+    })?;
+
+    if pem_str.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+        return Err(ApiError::Crypto(
+            "Encrypted private keys are not supported. Please use an unencrypted PEM private key restricted to 0600 permissions."
+                .to_string(),
+        ));
+    }
+
+    let mut key_found = false;
 
     // 1. Check RSA PKCS#1
     if let Some(start) = pem_str.find("-----BEGIN RSA PRIVATE KEY-----") {
         if let Some(end) = pem_str[start..].find("-----END RSA PRIVATE KEY-----") {
+            key_found = true;
             let block = &pem_str[start..start + end + "-----END RSA PRIVATE KEY-----".len()];
-            if let Ok(key) = rsa::RsaPrivateKey::from_pkcs1_pem(block) {
-                let bits = key.size() * 8;
-                if bits < 2048 {
+            match rsa::RsaPrivateKey::from_pkcs1_pem(block) {
+                Ok(key) => check_rsa_key_strength(&key)?,
+                Err(e) => {
                     return Err(ApiError::Crypto(format!(
-                        "RSA client key length ({} bits) is below minimum safe threshold (2048 bits)",
-                        bits
+                        "Failed to parse PKCS#1 RSA private key: {}",
+                        e
                     )));
                 }
             }
@@ -587,37 +610,72 @@ pub fn validate_client_key_strength(pem_bytes: &[u8]) -> Result<(), ApiError> {
     // 2. Check PKCS#8
     if let Some(start) = pem_str.find("-----BEGIN PRIVATE KEY-----") {
         if let Some(end) = pem_str[start..].find("-----END PRIVATE KEY-----") {
+            key_found = true;
             let block = &pem_str[start..start + end + "-----END PRIVATE KEY-----".len()];
             if let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_pem(block) {
-                let bits = key.size() * 8;
-                if bits < 2048 {
-                    return Err(ApiError::Crypto(format!(
-                        "RSA client key length ({} bits) is below minimum safe threshold (2048 bits)",
-                        bits
-                    )));
+                check_rsa_key_strength(&key)?;
+            } else {
+                // Not an RSA key; inspect PKCS#8 DER structure for EC or other key types
+                let b64: String = pem_str[start + "-----BEGIN PRIVATE KEY-----".len()..start + end]
+                    .lines()
+                    .collect();
+                let b64_clean = b64.trim();
+                let der =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64_clean)
+                        .map_err(|e| {
+                        ApiError::Crypto(format!("Invalid base64 in PKCS#8 private key: {}", e))
+                    })?;
+
+                match pkcs8::PrivateKeyInfoRef::try_from(&der[..]) {
+                    Ok(info) => {
+                        // EC / Ed25519 private key scalars must be at least 32 bytes (256 bits).
+                        // eMudhra zero-day vulnerability (weak P-384 keys with 3-8 bits entropy) produces degenerate scalars.
+                        if u32::from(info.private_key.len()) < 32 {
+                            return Err(ApiError::Crypto(
+                                "PKCS#8 client private key scalar is degraded or below 256 bits"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(ApiError::Crypto(format!(
+                            "Failed to parse PKCS#8 private key structure: {}",
+                            e
+                        )));
+                    }
                 }
             }
         }
     }
 
-    // 3. Check EC Private Key
+    // 3. Check EC SEC1 Private Key
     if let Some(start) = pem_str.find("-----BEGIN EC PRIVATE KEY-----") {
         if let Some(end) = pem_str[start..].find("-----END EC PRIVATE KEY-----") {
+            key_found = true;
             let b64: String = pem_str[start + "-----BEGIN EC PRIVATE KEY-----".len()..start + end]
                 .lines()
                 .collect();
             let b64_clean = b64.trim();
-            if let Ok(decoded) =
+            let decoded =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64_clean)
-            {
-                // Minimum valid EC SEC1 key for P-256 or higher is ~120 bytes (private scalar at least 32 bytes)
-                if decoded.len() < 32 {
-                    return Err(ApiError::Crypto(
-                        "Elliptic curve client private key is corrupted or degraded".to_string(),
-                    ));
-                }
+                    .map_err(|e| {
+                        ApiError::Crypto(format!("Invalid base64 in EC private key: {}", e))
+                    })?;
+
+            // Minimum valid EC SEC1 key for P-256 or higher is ~120 bytes (private scalar at least 32 bytes)
+            if decoded.len() < 32 {
+                return Err(ApiError::Crypto(
+                    "Elliptic curve client private key is corrupted or degraded".to_string(),
+                ));
             }
         }
+    }
+
+    if !key_found {
+        return Err(ApiError::Crypto(
+            "No recognized private key found in PEM (expected RSA, EC, or PKCS#8 private key)"
+                .to_string(),
+        ));
     }
 
     Ok(())
@@ -687,11 +745,13 @@ pub fn build_http_client_with_context(
     client_context: Option<&ClientContext>,
 ) -> Client {
     build_http_client_for_url(timeout, client_context, None)
+        .unwrap_or_else(|_| Client::builder().build().unwrap_or_default())
 }
 
 /// Builds a default HTTP blocking client with standard Bitwarden client headers and the specified timeout.
 pub fn build_http_client(timeout: Duration) -> Client {
     build_http_client_for_url(timeout, None, None)
+        .unwrap_or_else(|_| Client::builder().build().unwrap_or_default())
 }
 
 /// Builds an HTTP blocking client optionally targeting a specific server URL for mTLS client certificate presentation.
@@ -699,7 +759,17 @@ pub fn build_http_client_for_url(
     timeout: Duration,
     client_context: Option<&ClientContext>,
     target_url: Option<&str>,
-) -> Client {
+) -> Result<Client, ApiError> {
+    build_http_client_for_url_with_config(timeout, client_context, target_url, None)
+}
+
+/// Builds an HTTP blocking client with optional configuration override for deterministic mTLS origin gating.
+pub fn build_http_client_for_url_with_config(
+    timeout: Duration,
+    client_context: Option<&ClientContext>,
+    target_url: Option<&str>,
+    config_override: Option<&crate::config::Config>,
+) -> Result<Client, ApiError> {
     let mut default_headers = reqwest::header::HeaderMap::new();
     let ua_str = format_user_agent(client_context);
     let ua_val = reqwest::header::HeaderValue::from_str(&ua_str).unwrap_or_else(|_| {
@@ -724,7 +794,14 @@ pub fn build_http_client_for_url(
         .timeout(timeout);
 
     // Gated mTLS Identity Attachment
-    let cfg = crate::config::ConfigManager::default().load();
+    let loaded_cfg;
+    let cfg = match config_override {
+        Some(c) => c,
+        None => {
+            loaded_cfg = crate::config::ConfigManager::default().load();
+            &loaded_cfg
+        }
+    };
     if let (Some(cert_path_str), Some(cert_server)) = (
         cfg.client_cert_path.as_deref(),
         cfg.client_cert_server.as_deref(),
@@ -737,19 +814,33 @@ pub fn build_http_client_for_url(
         if should_attach {
             let cert_p = std::path::PathBuf::from(cert_path_str);
             let key_p = cfg.client_key_path.as_ref().map(std::path::PathBuf::from);
-            if let Ok(identity) = load_client_identity_from_pem(&cert_p, key_p.as_deref()) {
-                builder = builder.identity(identity);
+            match load_client_identity_from_pem(&cert_p, key_p.as_deref()) {
+                Ok(identity) => {
+                    builder = builder.identity(identity);
+                }
+                Err(e) => {
+                    crate::log_error!(
+                        "omawarden:api",
+                        "Failed to load client mTLS identity for origin '{}': {}",
+                        cert_server,
+                        e
+                    );
+                    return Err(e);
+                }
             }
         }
     }
 
-    builder.build().unwrap_or_default()
+    builder
+        .build()
+        .map_err(|e| ApiError::Http(format!("Failed to build HTTP client: {}", e)))
 }
 
 pub struct BitwardenApiClient {
     pub server_url: String,
     pub urls: EnvironmentUrls,
     client: Client,
+    client_init_error: Option<ApiError>,
 }
 
 impl BitwardenApiClient {
@@ -766,26 +857,52 @@ impl BitwardenApiClient {
         explicit_identity_url: Option<&str>,
         client_context: Option<&ClientContext>,
     ) -> Self {
+        Self::with_options_and_config(server_url, explicit_identity_url, client_context, None)
+    }
+
+    pub fn with_options_and_config(
+        server_url: &str,
+        explicit_identity_url: Option<&str>,
+        client_context: Option<&ClientContext>,
+        config_override: Option<&crate::config::Config>,
+    ) -> Self {
         let urls = EnvironmentUrls::resolve(server_url, explicit_identity_url);
-        let client =
-            build_http_client_for_url(Duration::from_secs(30), client_context, Some(server_url));
+        let (client, client_init_error) = match build_http_client_for_url_with_config(
+            Duration::from_secs(30),
+            client_context,
+            Some(server_url),
+            config_override,
+        ) {
+            Ok(c) => (c, None),
+            Err(e) => (Client::builder().build().unwrap_or_default(), Some(e)),
+        };
         Self {
             server_url: urls.base_url.clone(),
             urls,
             client,
+            client_init_error,
+        }
+    }
+
+    fn get_client(&self) -> Result<&Client, ApiError> {
+        if let Some(ref err) = self.client_init_error {
+            Err(err.clone())
+        } else {
+            Ok(&self.client)
         }
     }
 
     pub fn prelogin(&self, email: &str) -> Result<PreloginResponse, ApiError> {
+        let client = self.get_client()?;
         let primary_url = format!("{}/accounts/prelogin", self.urls.identity_url);
         let fallback_url = format!("{}/accounts/prelogin", self.urls.api_url);
 
         let email_payload = json!({ "email": email.trim().to_lowercase() });
-        let mut resp = self.client.post(&primary_url).json(&email_payload).send();
+        let mut resp = client.post(&primary_url).json(&email_payload).send();
 
         if let Ok(ref r) = resp {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(&fallback_url).json(&email_payload).send();
+                resp = client.post(&fallback_url).json(&email_payload).send();
             }
         }
 
@@ -807,6 +924,7 @@ impl BitwardenApiClient {
         &self,
         form_params: &HashMap<&str, String>,
     ) -> Result<reqwest::blocking::Response, ApiError> {
+        let client = self.get_client()?;
         let primary_url = format!("{}/connect/token", self.urls.identity_url);
         let fallback_url = if self.urls.is_cloud {
             None
@@ -814,10 +932,10 @@ impl BitwardenApiClient {
             Some(format!("{}/connect/token", self.urls.base_url))
         };
 
-        let mut resp = self.client.post(&primary_url).form(form_params).send();
+        let mut resp = client.post(&primary_url).form(form_params).send();
         if let (Some(ref fb_url), Ok(ref r)) = (fallback_url, &resp) {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(fb_url).form(form_params).send();
+                resp = client.post(fb_url).form(form_params).send();
             }
         }
 
@@ -1098,10 +1216,11 @@ impl BitwardenApiClient {
         let primary_url = format!("{}/api/two-factor/send-email-login", self.urls.base_url);
         let fallback_url = format!("{}/two-factor/send-email-login", self.urls.base_url);
 
-        let mut resp = self.client.post(&primary_url).json(&payload).send();
+        let client = self.get_client()?;
+        let mut resp = client.post(&primary_url).json(&payload).send();
         if let Ok(ref r) = resp {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(&fallback_url).json(&payload).send();
+                resp = client.post(&fallback_url).json(&payload).send();
             }
         }
 
@@ -1208,9 +1327,9 @@ impl BitwardenApiClient {
     }
 
     pub fn sync_vault(&self, access_token: &str) -> Result<SyncResponse, ApiError> {
+        let client = self.get_client()?;
         let url = format!("{}/sync", self.urls.api_url);
-        let mut resp = self
-            .client
+        let mut resp = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
@@ -1230,9 +1349,9 @@ impl BitwardenApiClient {
     }
 
     pub fn create_cipher(&self, access_token: &str, payload: &Value) -> Result<Value, ApiError> {
+        let client = self.get_client()?;
         let url = format!("{}/ciphers", self.urls.api_url);
-        let mut resp = self
-            .client
+        let mut resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", access_token))
             .json(payload)
@@ -3806,44 +3925,88 @@ MLC62jYKG2dIdS5jh3VtXQlyr7M6wIWLQCcezPkA8/AsmC3w8fsbz7Zj2qTzke+z
         #[cfg(unix)]
         std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        let config_json = cfg_dir.join("config.json");
-        let cfg_content = format!(
-            r#"{{
-                "server_url": "https://vault.mycorp.internal:8443",
-                "client_cert_path": "{}",
-                "client_key_path": "{}",
-                "client_cert_server": "https://vault.mycorp.internal:8443"
-            }}"#,
-            cert_file.display(),
-            key_file.display()
-        );
-        std::fs::write(&config_json, cfg_content).unwrap();
-
-        // Point XDG_CONFIG_HOME to temporary directory
-        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let test_cfg = crate::config::Config {
+            server_url: "https://vault.mycorp.internal:8443".to_string(),
+            client_cert_path: Some(cert_file.to_str().unwrap().to_string()),
+            client_key_path: Some(key_file.to_str().unwrap().to_string()),
+            client_cert_server: Some("https://vault.mycorp.internal:8443".to_string()),
+            ..Default::default()
+        };
 
         // Target matching origin: client should successfully build with identity
-        let client_matching = build_http_client_for_url(
+        let client_matching = build_http_client_for_url_with_config(
             Duration::from_secs(5),
             None,
             Some("https://vault.mycorp.internal:8443/api/sync"),
-        );
+            Some(&test_cfg),
+        )
+        .unwrap();
         // Verify client can attempt requests
         assert!(client_matching.get("http://localhost").build().is_ok());
 
         // Target foreign origin (e.g. public cloud): client builds without identity
-        let client_foreign = build_http_client_for_url(
+        let client_foreign = build_http_client_for_url_with_config(
             Duration::from_secs(5),
             None,
             Some("https://vault.bitwarden.com/api/sync"),
-        );
+            Some(&test_cfg),
+        )
+        .unwrap();
         assert!(client_foreign.get("http://localhost").build().is_ok());
 
-        // Restore environment
-        match old_xdg {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        // Target matching origin with insecure key permissions (0644) must fail closed
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let client_insecure = build_http_client_for_url_with_config(
+                Duration::from_secs(5),
+                None,
+                Some("https://vault.mycorp.internal:8443/api/sync"),
+                Some(&test_cfg),
+            );
+            assert!(client_insecure.is_err());
+            let err_msg = client_insecure.unwrap_err().to_string();
+            assert!(err_msg.contains("Insecure permissions"));
+
+            // BitwardenApiClient with insecure key must fail closed on calls
+            let api_client = BitwardenApiClient::with_options_and_config(
+                "https://vault.mycorp.internal:8443",
+                None,
+                None,
+                Some(&test_cfg),
+            );
+            let sync_res = api_client.sync_vault("dummy-token");
+            assert!(sync_res.is_err());
         }
+    }
+
+    #[test]
+    fn test_validate_client_key_strength_rejections() {
+        // Non-UTF-8 bytes
+        let non_utf8 = [0xff, 0xfe, 0xfd];
+        let res_utf8 = validate_client_key_strength(&non_utf8);
+        assert!(res_utf8.is_err());
+        assert!(res_utf8
+            .unwrap_err()
+            .to_string()
+            .contains("not valid UTF-8"));
+
+        // Encrypted private keys
+        let encrypted_pem = b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIB...==\n-----END ENCRYPTED PRIVATE KEY-----";
+        let res_enc = validate_client_key_strength(encrypted_pem);
+        assert!(res_enc.is_err());
+        assert!(res_enc
+            .unwrap_err()
+            .to_string()
+            .contains("Encrypted private keys are not supported"));
+
+        // Unknown / empty PEM
+        let empty_pem = b"-----BEGIN CERTIFICATE-----\nMIIB...==\n-----END CERTIFICATE-----";
+        let res_empty = validate_client_key_strength(empty_pem);
+        assert!(res_empty.is_err());
+        assert!(res_empty
+            .unwrap_err()
+            .to_string()
+            .contains("No recognized private key found"));
     }
 }

@@ -604,6 +604,55 @@ fn main() -> ExitCode {
                     matches!(lower.as_str(), "true" | "1" | "yes")
                 });
 
+                if let Some(ref cert_str) = client_cert {
+                    let trimmed = cert_str.trim();
+                    if !trimmed.is_empty() {
+                        let cert_path = std::path::Path::new(trimmed);
+                        if !cert_path.exists() {
+                            eprintln!(
+                                "Error: Client certificate file not found: '{}'",
+                                cert_path.display()
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                        let key_target = if let Some(ref key_str) = client_key {
+                            let key_trimmed = key_str.trim();
+                            if !key_trimmed.is_empty() {
+                                std::path::Path::new(key_trimmed)
+                            } else {
+                                cert_path
+                            }
+                        } else {
+                            cert_path
+                        };
+
+                        if !key_target.exists() {
+                            eprintln!(
+                                "Error: Client private key file not found: '{}'",
+                                key_target.display()
+                            );
+                            return ExitCode::FAILURE;
+                        }
+
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = std::fs::metadata(key_target) {
+                                let mode = meta.permissions().mode() & 0o777;
+                                if mode & 0o077 != 0 {
+                                    eprintln!(
+                                        "Error: Insecure permissions ({:#o}) on client private key '{}': file must be restricted to 0600 or 0400 (run `chmod 600 {}`)",
+                                        mode,
+                                        key_target.display(),
+                                        key_target.display()
+                                    );
+                                    return ExitCode::FAILURE;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let options = ConfigUpdateOptions {
                     server_url,
                     identity_url,

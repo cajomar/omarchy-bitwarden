@@ -25,7 +25,32 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
 
     // 1. Check server reachability
     let client =
-        crate::api::build_http_client_for_url(Duration::from_secs(4), None, Some(server_url));
+        match crate::api::build_http_client_for_url(Duration::from_secs(4), None, Some(server_url))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return HealthStatus {
+                    installed: true,
+                    ok: false,
+                    version: Some(version),
+                    commit: if commit != "unknown" {
+                        Some(commit)
+                    } else {
+                        None
+                    },
+                    build_date: if build_date != "unknown" {
+                        Some(build_date)
+                    } else {
+                        None
+                    },
+                    server_url: server_url.to_string(),
+                    server_reachable: false,
+                    keyring_available: which::which("secret-tool").is_ok(),
+                    clipboard_available: which::which("wl-copy").is_ok(),
+                    error: Some(format!("Client mTLS certificate error: {}", e)),
+                };
+            }
+        };
 
     let env_urls = crate::api::EnvironmentUrls::resolve(server_url, None);
     let prelogin_url = format!("{}/accounts/prelogin", env_urls.identity_url);
