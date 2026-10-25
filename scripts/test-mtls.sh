@@ -55,6 +55,12 @@ cmd_setup() {
   # Set 0600 POSIX permissions
   chmod 600 client.key client-bundle.pem
 
+  # Ensure port is free from any previous aborted test run
+  if fuser "${PORT}/tcp" >/dev/null 2>&1; then
+    fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
+
   echo ">> [3/3] Starting local mTLS OpenSSL gateway on https://127.0.0.1:${PORT}..."
   openssl s_server -accept "127.0.0.1:${PORT}" \
     -cert "${WORK_DIR}/server.crt" \

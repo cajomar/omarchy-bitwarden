@@ -55,6 +55,15 @@ Item {
     check(IconPolicy.isOfficialServer("http://192.168.1.50:8080") === false, "lan IP is self-hosted")
     check(IconPolicy.isOfficialServer("https://vault.corp.internal/api/") === false, "corp.internal is self-hosted")
 
+    // B2. RFC 6454 Origin extraction and same-origin matching
+    check(IconPolicy.extractOrigin("https://vault.example.com:8443/api/") === "https://vault.example.com:8443", "extractOrigin parses origin with port and path")
+    check(IconPolicy.extractOrigin("http://127.0.0.1:8080") === "http://127.0.0.1:8080", "extractOrigin parses http IP and port")
+    check(IconPolicy.extractOrigin("vault.bitwarden.com") === "https://vault.bitwarden.com", "extractOrigin adds https scheme if missing")
+    check(IconPolicy.isSameOrigin("https://vault.corp.com:8443", "https://vault.corp.com:8443/api") === true, "isSameOrigin true for same origin different path")
+    check(IconPolicy.isSameOrigin("https://vault.corp.com:8443", "https://vault.corp.com:9443") === false, "isSameOrigin false for different port")
+    check(IconPolicy.isSameOrigin("https://vault.corp.com", "https://other.corp.com") === false, "isSameOrigin false for different domain")
+    check(IconPolicy.isSameOrigin("https://vault.corp.com", "https://vault.bitwarden.com") === false, "isSameOrigin false for cloud vs custom")
+
     // C. Icon URL resolution: Cloud vs Self-hosted
     check(IconPolicy.resolveIconUrl("https://vault.bitwarden.com", "github.com") === "https://icons.bitwarden.net/github.com/icon.png",
           "cloud US resolves to icons.bitwarden.net")

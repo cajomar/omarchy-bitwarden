@@ -34,6 +34,7 @@ STANDALONE_TESTS=(
   "tests/tst_lock_cleanup.qml"
   "tests/tst_scope_filtering.qml"
   "tests/tst_sync_error_formatting.qml"
+  "tests/tst_mtls_ui_gating.qml"
 )
 
 for test_file in "${STANDALONE_TESTS[@]}"; do

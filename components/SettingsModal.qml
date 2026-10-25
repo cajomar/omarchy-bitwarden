@@ -55,18 +55,48 @@ Item {
   property bool showWebsiteIconsChecked: true
   property bool rememberLastSearchChecked: false
 
+  readonly property string curServerUrl: (sUrlInput && sUrlInput.text.trim()) ? sUrlInput.text.trim() : ((config && config.server_url) ? config.server_url : "")
+  readonly property bool isOfficialServer: IconPolicy.isOfficialServer(curServerUrl)
+  readonly property bool certMatchesServer: {
+    if (!config || !config.client_cert_server || !config.client_cert_path) return false
+    if (isOfficialServer) return false
+    return IconPolicy.isSameOrigin(curServerUrl, config.client_cert_server)
+  }
+
+  onCertMatchesServerChanged: {
+    if (clientCertInput) {
+      clientCertInput.text = settingsRoot.certMatchesServer ? ((config && config.client_cert_path) || "") : ""
+    }
+    if (clientKeyInput) {
+      clientKeyInput.text = settingsRoot.certMatchesServer ? ((config && config.client_key_path) || "") : ""
+    }
+  }
+
   onConfigChanged: {
     if (config) checkUpdatesChecked = (config.check_updates !== false)
     if (config) showWebsiteIconsChecked = (config.show_website_icons !== false)
     if (config) rememberLastSearchChecked = (config.remember_last_search === true)
+    if (sUrlInput && config && config.server_url) {
+      sUrlInput.text = config.server_url
+    }
+    if (clientCertInput) {
+      clientCertInput.text = settingsRoot.certMatchesServer ? ((config && config.client_cert_path) || "") : ""
+    }
+    if (clientKeyInput) {
+      clientKeyInput.text = settingsRoot.certMatchesServer ? ((config && config.client_key_path) || "") : ""
+    }
   }
 
   function buildPayload() {
+    var isOfficial = settingsRoot.isOfficialServer
+    var certPath = isOfficial ? "" : (clientCertInput.visible ? clientCertInput.text.trim() : "")
+    var keyPath = isOfficial ? "" : (clientKeyInput.visible ? clientKeyInput.text.trim() : "")
+
     return {
       server_url: sUrlInput.text.trim() || "https://vault.bitwarden.com",
       identity_url: idUrlInput.text.trim(),
-      client_cert_path: clientCertInput.text.trim(),
-      client_key_path: clientKeyInput.text.trim(),
+      client_cert_path: certPath,
+      client_key_path: keyPath,
       download_dir: dlDirInput.text.trim() || "~/Downloads",
       auto_lock_minutes: isNaN(parseInt(lockMinInput.text.trim())) ? 15 : Math.max(0, parseInt(lockMinInput.text.trim())),
       clipboard_clear_seconds: isNaN(parseInt(clipSecInput.text.trim())) ? 30 : Math.max(0, parseInt(clipSecInput.text.trim())),
@@ -527,7 +557,7 @@ Item {
                 id: idUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
-                KeyNavigation.tab: clientCertInput
+                KeyNavigation.tab: settingsRoot.isOfficialServer ? dlDirInput : clientCertInput
                 KeyNavigation.backtab: sUrlInput
                 text: (settingsRoot.config && settingsRoot.config.identity_url) ? settingsRoot.config.identity_url : ""
               }
@@ -541,8 +571,9 @@ Item {
             }
           }
 
-          // mTLS Client Certificate Path
+          // mTLS Client Certificate Path (Self-Hosted Only)
           ColumnLayout {
+            visible: !settingsRoot.isOfficialServer
             Layout.fillWidth: true
             spacing: 3
             RowLayout {
@@ -558,7 +589,7 @@ Item {
                 activeFocusOnTab: true
                 KeyNavigation.tab: clientKeyInput
                 KeyNavigation.backtab: idUrlInput
-                text: (settingsRoot.config && settingsRoot.config.client_cert_path) ? settingsRoot.config.client_cert_path : ""
+                text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_cert_path) || "") : ""
               }
               Text {
                 anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
@@ -570,8 +601,9 @@ Item {
             }
           }
 
-          // mTLS Client Private Key Path
+          // mTLS Client Private Key Path (Self-Hosted Only)
           ColumnLayout {
+            visible: !settingsRoot.isOfficialServer
             Layout.fillWidth: true
             spacing: 3
             RowLayout {
@@ -587,7 +619,7 @@ Item {
                 activeFocusOnTab: true
                 KeyNavigation.tab: dlDirInput
                 KeyNavigation.backtab: clientCertInput
-                text: (settingsRoot.config && settingsRoot.config.client_key_path) ? settingsRoot.config.client_key_path : ""
+                text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_key_path) || "") : ""
               }
               Text {
                 anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
@@ -611,7 +643,7 @@ Item {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: lockMinInput
-                KeyNavigation.backtab: clientKeyInput
+                KeyNavigation.backtab: settingsRoot.isOfficialServer ? idUrlInput : clientKeyInput
                 text: (settingsRoot.config && settingsRoot.config.download_dir) ? settingsRoot.config.download_dir : "~/Downloads"
               }
             }
