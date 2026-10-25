@@ -43,6 +43,12 @@ pub struct Config {
     pub remember_last_search: bool,
     #[serde(default = "default_max_attachment_size_mb")]
     pub max_attachment_size_mb: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert_server: Option<String>,
 }
 
 fn default_server_url() -> String {
@@ -94,6 +100,9 @@ impl Default for Config {
             show_website_icons: default_show_website_icons(),
             remember_last_search: default_remember_last_search(),
             max_attachment_size_mb: default_max_attachment_size_mb(),
+            client_cert_path: None,
+            client_key_path: None,
+            client_cert_server: None,
         }
     }
 }
@@ -309,6 +318,47 @@ impl ConfigManager {
             cfg.max_attachment_size_mb = v;
         }
 
+        if let Some(ref cert_path) = options.client_cert_path {
+            let trimmed = cert_path.trim();
+            if trimmed.is_empty() {
+                cfg.client_cert_path = None;
+                cfg.client_key_path = None;
+                cfg.client_cert_server = None;
+            } else {
+                cfg.client_cert_path = Some(trimmed.to_string());
+                if let Some(ref key_path) = options.client_key_path {
+                    let trimmed_key = key_path.trim();
+                    if trimmed_key.is_empty() {
+                        cfg.client_key_path = None;
+                    } else {
+                        cfg.client_key_path = Some(trimmed_key.to_string());
+                    }
+                }
+                // Automatically bind client_cert_server to the RFC 6454 origin of server_url
+                if let Ok(u) = url::Url::parse(&cfg.server_url) {
+                    let port_suffix = match u.port() {
+                        Some(p) => format!(":{}", p),
+                        None => String::new(),
+                    };
+                    cfg.client_cert_server = Some(format!(
+                        "{}://{}{}",
+                        u.scheme(),
+                        u.host_str().unwrap_or(""),
+                        port_suffix
+                    ));
+                } else {
+                    cfg.client_cert_server = Some(cfg.server_url.clone());
+                }
+            }
+        } else if let Some(ref key_path) = options.client_key_path {
+            let trimmed_key = key_path.trim();
+            if trimmed_key.is_empty() {
+                cfg.client_key_path = None;
+            } else {
+                cfg.client_key_path = Some(trimmed_key.to_string());
+            }
+        }
+
         self.save(&cfg)?;
         Ok((cfg, server_changed))
     }
@@ -328,6 +378,8 @@ pub struct ConfigUpdateOptions {
     pub show_website_icons: Option<bool>,
     pub remember_last_search: Option<bool>,
     pub max_attachment_size_mb: Option<u64>,
+    pub client_cert_path: Option<String>,
+    pub client_key_path: Option<String>,
 }
 
 #[cfg(test)]
@@ -939,5 +991,99 @@ esac
         assert!(target_file.exists());
         let content = fs::read_to_string(&target_file).unwrap();
         assert_eq!(content, "{\"new\":true}");
+    }
+
+    #[test]
+    fn test_mtls_client_cert_configuration_lifecycle() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let storage_path = dir.path().join("data.json");
+        let mock_script = create_mock_secret_tool(dir.path());
+
+        let config_mgr = ConfigManager::new(Some(&config_path));
+        let storage_mgr = crate::storage::StorageManager::new(storage_path);
+        let keyring_mgr = crate::keyring::KeyringManager::new(&mock_script);
+
+        // 1. Set server_url to custom vaultwarden instance
+        let (cfg, _) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    server_url: Some("https://vault.mycorp.internal:8443".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert_eq!(cfg.server_url, "https://vault.mycorp.internal:8443");
+        assert_eq!(cfg.client_cert_path, None);
+        assert_eq!(cfg.client_key_path, None);
+        assert_eq!(cfg.client_cert_server, None);
+
+        // 2. Set client_cert and client_key -> should record and bind client_cert_server origin
+        let (cfg_with_cert, _) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    client_cert_path: Some("/home/user/.certs/client.crt".to_string()),
+                    client_key_path: Some("/home/user/.certs/client.key".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert_eq!(
+            cfg_with_cert.client_cert_path.as_deref(),
+            Some("/home/user/.certs/client.crt")
+        );
+        assert_eq!(
+            cfg_with_cert.client_key_path.as_deref(),
+            Some("/home/user/.certs/client.key")
+        );
+        assert_eq!(
+            cfg_with_cert.client_cert_server.as_deref(),
+            Some("https://vault.mycorp.internal:8443")
+        );
+
+        // 3. Server URL change: per ADR 0023, mTLS cert path and bound origin must be PRESERVED
+        let (cfg_switched, server_changed) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    server_url: Some("https://vault.bitwarden.com".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert!(server_changed);
+        assert_eq!(cfg_switched.server_url, "https://vault.bitwarden.com");
+        assert_eq!(
+            cfg_switched.client_cert_path.as_deref(),
+            Some("/home/user/.certs/client.crt")
+        );
+        assert_eq!(
+            cfg_switched.client_key_path.as_deref(),
+            Some("/home/user/.certs/client.key")
+        );
+        assert_eq!(
+            cfg_switched.client_cert_server.as_deref(),
+            Some("https://vault.mycorp.internal:8443")
+        );
+
+        // 4. Setting client_cert to empty string clears client_cert_path, client_key_path, and client_cert_server
+        let (cfg_cleared, _) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    client_cert_path: Some("".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert_eq!(cfg_cleared.client_cert_path, None);
+        assert_eq!(cfg_cleared.client_key_path, None);
+        assert_eq!(cfg_cleared.client_cert_server, None);
     }
 }

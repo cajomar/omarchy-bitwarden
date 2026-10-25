@@ -24,7 +24,8 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
     let server_clean = server_url.trim_end_matches('/');
 
     // 1. Check server reachability
-    let client = crate::api::build_http_client(Duration::from_secs(4));
+    let client =
+        crate::api::build_http_client_for_url(Duration::from_secs(4), None, Some(server_url));
 
     let env_urls = crate::api::EnvironmentUrls::resolve(server_url, None);
     let prelogin_url = format!("{}/accounts/prelogin", env_urls.identity_url);

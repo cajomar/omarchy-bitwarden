@@ -40,6 +40,7 @@ pub fn sanitize_log_message(msg: &str) -> String {
     static PWD_RE: OnceLock<Regex> = OnceLock::new();
     static SECRET_RE: OnceLock<Regex> = OnceLock::new();
     static CODE_RE: OnceLock<Regex> = OnceLock::new();
+    static PEM_KEY_RE: OnceLock<Regex> = OnceLock::new();
 
     let token_re = TOKEN_RE.get_or_init(|| Regex::new(r"(?i)bearer\s+[a-z0-9_\-\.]+").unwrap());
     let pwd_re = PWD_RE.get_or_init(|| {
@@ -47,11 +48,15 @@ pub fn sanitize_log_message(msg: &str) -> String {
             .unwrap()
     });
     let secret_re = SECRET_RE.get_or_init(|| {
-        Regex::new(r#"(?i)("client_secret"|"clientSecret"|"userKey"|"privateKey")\s*:\s*"[^"]*""#)
+        Regex::new(r#"(?i)("client_secret"|"clientSecret"|"userKey"|"privateKey"|"clientKey")\s*:\s*"[^"]*""#)
             .unwrap()
     });
     let code_re = CODE_RE.get_or_init(|| {
         Regex::new(r#"(?i)("code"|"twoFactorToken"|"newDeviceOtp"|"new_device_otp")\s*:\s*"[^"]*""#)
+            .unwrap()
+    });
+    let pem_key_re = PEM_KEY_RE.get_or_init(|| {
+        Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
             .unwrap()
     });
 
@@ -59,7 +64,8 @@ pub fn sanitize_log_message(msg: &str) -> String {
     let s2 = pwd_re.replace_all(&s1, r#"$1:"<REDACTED>""#);
     let s3 = secret_re.replace_all(&s2, r#"$1:"<REDACTED>""#);
     let s4 = code_re.replace_all(&s3, r#"$1:"<REDACTED>""#);
-    s4.into_owned()
+    let s5 = pem_key_re.replace_all(&s4, "<REDACTED PRIVATE KEY>");
+    s5.into_owned()
 }
 
 pub fn get_active_log_level() -> LogLevel {
@@ -133,5 +139,10 @@ mod tests {
         assert!(sanitized.contains("\"password\":\"<REDACTED>\""));
         assert!(sanitized.contains("\"code\":\"<REDACTED>\""));
         assert!(sanitized.contains("\"newDeviceOtp\":\"<REDACTED>\""));
+
+        let pem_log = "Error loading key: -----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDDbwGL\n-----END PRIVATE KEY----- in file";
+        let sanitized_pem = sanitize_log_message(pem_log);
+        assert!(!sanitized_pem.contains("MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDDbwGL"));
+        assert!(sanitized_pem.contains("<REDACTED PRIVATE KEY>"));
     }
 }

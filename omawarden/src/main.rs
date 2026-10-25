@@ -232,6 +232,13 @@ enum ConfigAction {
         remember_last_search: Option<String>,
         #[arg(long, help = "Maximum allowed attachment size in MB (default: 500)")]
         max_attachment_size: Option<u64>,
+        #[arg(
+            long,
+            help = "Path to client certificate PEM file for mTLS (pass \"\" to clear)"
+        )]
+        client_cert: Option<String>,
+        #[arg(long, help = "Path to separate client private key PEM file for mTLS")]
+        client_key: Option<String>,
     },
 }
 
@@ -529,6 +536,15 @@ fn main() -> ExitCode {
                         "max_attachment_size_mb" | "max_attachment_size" => {
                             println!("{}", cfg.max_attachment_size_mb)
                         }
+                        "client_cert_path" | "client_cert" => {
+                            println!("{}", cfg.client_cert_path.as_deref().unwrap_or(""))
+                        }
+                        "client_key_path" | "client_key" => {
+                            println!("{}", cfg.client_key_path.as_deref().unwrap_or(""))
+                        }
+                        "client_cert_server" => {
+                            println!("{}", cfg.client_cert_server.as_deref().unwrap_or(""))
+                        }
                         _ => {
                             eprintln!("Unknown configuration key: {}", k);
                             return ExitCode::FAILURE;
@@ -552,6 +568,8 @@ fn main() -> ExitCode {
                 show_website_icons,
                 remember_last_search,
                 max_attachment_size,
+                client_cert,
+                client_key,
             } => {
                 let storage_mgr = match cli.config.as_deref() {
                     Some(cp) => {
@@ -599,6 +617,8 @@ fn main() -> ExitCode {
                     show_website_icons: parsed_show_website_icons,
                     remember_last_search: parsed_remember_last_search,
                     max_attachment_size_mb: max_attachment_size,
+                    client_cert_path: client_cert,
+                    client_key_path: client_key,
                 };
 
                 let (updated_cfg, _server_changed) =
@@ -2395,6 +2415,50 @@ mod tests {
                         ..
                     },
             } => assert_eq!(max_attachment_size, Some(250)),
+            _ => panic!("Expected Commands::Config with ConfigAction::Set"),
+        }
+    }
+
+    #[test]
+    fn test_cli_client_cert_and_key_arg_parsing() {
+        let cli_default = Cli::try_parse_from(["omawarden", "config", "set"]).unwrap();
+        match cli_default.command {
+            Commands::Config {
+                action:
+                    ConfigAction::Set {
+                        client_cert,
+                        client_key,
+                        ..
+                    },
+            } => {
+                assert_eq!(client_cert, None);
+                assert_eq!(client_key, None);
+            }
+            _ => panic!("Expected Commands::Config with ConfigAction::Set"),
+        }
+
+        let cli_custom = Cli::try_parse_from([
+            "omawarden",
+            "config",
+            "set",
+            "--client-cert",
+            "/path/to/cert.pem",
+            "--client-key",
+            "/path/to/key.pem",
+        ])
+        .unwrap();
+        match cli_custom.command {
+            Commands::Config {
+                action:
+                    ConfigAction::Set {
+                        client_cert,
+                        client_key,
+                        ..
+                    },
+            } => {
+                assert_eq!(client_cert, Some("/path/to/cert.pem".to_string()));
+                assert_eq!(client_key, Some("/path/to/key.pem".to_string()));
+            }
             _ => panic!("Expected Commands::Config with ConfigAction::Set"),
         }
     }

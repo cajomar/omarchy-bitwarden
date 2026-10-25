@@ -366,7 +366,11 @@ pub fn get_attachment(
         env_urls.api_url, item_id, attachment_id
     );
 
-    let client = crate::api::build_http_client(std::time::Duration::from_secs(45));
+    let client = crate::api::build_http_client_for_url(
+        std::time::Duration::from_secs(45),
+        None,
+        Some(&download_url),
+    );
 
     let mut download_res = client
         .get(&download_url)
