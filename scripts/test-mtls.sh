@@ -7,10 +7,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BIN_PATH="${ROOT_DIR}/omawarden/target/debug/omawarden"
-WORK_DIR="/tmp/omawarden-mtls-test"
+WORK_DIR="${WORK_DIR:-/tmp/omawarden-mtls-test}"
 PID_FILE="${WORK_DIR}/server.pid"
-BACKUP_CFG="${WORK_DIR}/config_backup.json"
 PORT="8443"
+
+# Enforce complete sandbox isolation from host environment
+export OMAWARDEN_CONFIG_DIR="${WORK_DIR}/config"
+export XDG_DATA_HOME="${WORK_DIR}/data"
+export XDG_STATE_HOME="${WORK_DIR}/state"
 
 ensure_binary() {
   if [ ! -f "${BIN_PATH}" ]; then
@@ -21,15 +25,8 @@ ensure_binary() {
 
 cmd_setup() {
   ensure_binary
-  echo ">> [1/3] Preparing temporary test directory at ${WORK_DIR}..."
-  mkdir -p "${WORK_DIR}"
-
-  # Backup user configuration if present
-  local default_cfg_path="${XDG_CONFIG_HOME:-${HOME}/.config}/omawarden/config.json"
-  if [ -f "${default_cfg_path}" ]; then
-    echo ">> Backing up current omawarden config to ${BACKUP_CFG}..."
-    cp "${default_cfg_path}" "${BACKUP_CFG}"
-  fi
+  echo ">> [1/3] Preparing isolated sandbox at ${WORK_DIR}..."
+  mkdir -p -m 700 "${WORK_DIR}" "${OMAWARDEN_CONFIG_DIR}" "${XDG_DATA_HOME}" "${XDG_STATE_HOME}"
 
   echo ">> [2/3] Generating local test Certificate Authority & Keys..."
   cd "${WORK_DIR}"
@@ -176,23 +173,13 @@ cmd_restore() {
     rm -f "${PID_FILE}"
   fi
 
-  # Restore config
-  local default_cfg_path="${XDG_CONFIG_HOME:-${HOME}/.config}/omawarden/config.json"
-  if [ -f "${BACKUP_CFG}" ]; then
-    echo ">> Restoring original omawarden configuration from backup..."
-    cp "${BACKUP_CFG}" "${default_cfg_path}"
-  elif [ -f "${BIN_PATH}" ]; then
-    echo ">> Clearing test client cert configuration..."
-    "${BIN_PATH}" config set --client-cert "" --client-key "" --server-url "https://vault.bitwarden.com" >/dev/null 2>&1 || true
-  fi
-
-  # Remove temp files
+  # Remove isolated sandbox
   if [ -d "${WORK_DIR}" ]; then
-    echo ">> Removing temporary files in ${WORK_DIR}..."
+    echo ">> Removing sandbox environment in ${WORK_DIR}..."
     rm -rf "${WORK_DIR}"
   fi
 
-  echo ">> Teardown and restore complete."
+  echo ">> Teardown and restore complete (host configuration untouched)."
 }
 
 usage() {
