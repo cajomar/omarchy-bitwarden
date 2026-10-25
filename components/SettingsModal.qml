@@ -65,6 +65,8 @@ Item {
     return {
       server_url: sUrlInput.text.trim() || "https://vault.bitwarden.com",
       identity_url: idUrlInput.text.trim(),
+      client_cert_path: clientCertInput.text.trim(),
+      client_key_path: clientKeyInput.text.trim(),
       download_dir: dlDirInput.text.trim() || "~/Downloads",
       auto_lock_minutes: isNaN(parseInt(lockMinInput.text.trim())) ? 15 : Math.max(0, parseInt(lockMinInput.text.trim())),
       clipboard_clear_seconds: isNaN(parseInt(clipSecInput.text.trim())) ? 30 : Math.max(0, parseInt(clipSecInput.text.trim())),
@@ -525,7 +527,7 @@ Item {
                 id: idUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
-                KeyNavigation.tab: dlDirInput
+                KeyNavigation.tab: clientCertInput
                 KeyNavigation.backtab: sUrlInput
                 text: (settingsRoot.config && settingsRoot.config.identity_url) ? settingsRoot.config.identity_url : ""
               }
@@ -535,6 +537,64 @@ Item {
                 color: settingsRoot.mutedForeground
                 font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
                 visible: idUrlInput.text.length === 0
+              }
+            }
+          }
+
+          // mTLS Client Certificate Path
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 3
+            RowLayout {
+              spacing: 4
+              Text { text: "mTLS Client Certificate Path:"; color: settingsRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
+              Text { text: "(Optional, for self-hosted instances with mTLS gateway)"; color: settingsRoot.mutedForeground; font.pixelSize: Style.font.caption }
+            }
+            Rectangle {
+              Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientCertInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
+              TextInput {
+                id: clientCertInput
+                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                activeFocusOnTab: true
+                KeyNavigation.tab: clientKeyInput
+                KeyNavigation.backtab: idUrlInput
+                text: (settingsRoot.config && settingsRoot.config.client_cert_path) ? settingsRoot.config.client_cert_path : ""
+              }
+              Text {
+                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                text: "e.g. /home/user/.certs/client.crt or client.pem"
+                color: settingsRoot.mutedForeground
+                font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                visible: clientCertInput.text.length === 0
+              }
+            }
+          }
+
+          // mTLS Client Private Key Path
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 3
+            RowLayout {
+              spacing: 4
+              Text { text: "mTLS Client Private Key Path:"; color: settingsRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
+              Text { text: "(Optional if merged in PEM, file permissions must be 0600 or 0400)"; color: settingsRoot.mutedForeground; font.pixelSize: Style.font.caption }
+            }
+            Rectangle {
+              Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientKeyInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
+              TextInput {
+                id: clientKeyInput
+                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                activeFocusOnTab: true
+                KeyNavigation.tab: dlDirInput
+                KeyNavigation.backtab: clientCertInput
+                text: (settingsRoot.config && settingsRoot.config.client_key_path) ? settingsRoot.config.client_key_path : ""
+              }
+              Text {
+                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                text: "e.g. /home/user/.certs/client.key"
+                color: settingsRoot.mutedForeground
+                font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                visible: clientKeyInput.text.length === 0
               }
             }
           }
@@ -551,7 +611,7 @@ Item {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: lockMinInput
-                KeyNavigation.backtab: idUrlInput
+                KeyNavigation.backtab: clientKeyInput
                 text: (settingsRoot.config && settingsRoot.config.download_dir) ? settingsRoot.config.download_dir : "~/Downloads"
               }
             }

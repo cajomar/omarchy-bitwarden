@@ -1656,6 +1656,8 @@ Item {
     var cmd = [root.helperPath, "config", "set"]
     if (settings.server_url !== undefined) cmd.push("--server-url", settings.server_url)
     if (settings.identity_url !== undefined) cmd.push("--identity-url", settings.identity_url)
+    if (settings.client_cert_path !== undefined) cmd.push("--client-cert", settings.client_cert_path)
+    if (settings.client_key_path !== undefined) cmd.push("--client-key", settings.client_key_path)
     if (settings.download_dir !== undefined) cmd.push("--download-dir", settings.download_dir)
     if (settings.auto_lock_minutes !== undefined) cmd.push("--auto-lock", String(settings.auto_lock_minutes))
     if (settings.clipboard_clear_seconds !== undefined) cmd.push("--clipboard-clear", String(settings.clipboard_clear_seconds))
@@ -1685,6 +1687,8 @@ Item {
     report += "- **omawarden Version**: " + cliVer + "\n"
     report += "- **Server URL**: " + sUrl + "\n"
     report += "- **Identity URL**: " + idUrl + "\n"
+    var hasCert = Boolean(root.config && root.config.client_cert_path)
+    report += "- **mTLS Configured**: " + (hasCert ? "Yes" : "No") + "\n"
     report += "- **Configured Log Level**: " + lLevel + "\n"
     report += "- **Max Attachment Size**: " + maxAttMb + " MB\n"
     report += "- **Vault Status**: " + vStatus + "\n"
@@ -2381,6 +2385,13 @@ Item {
             onInstallPackageRequested: function(pkg) { root.installPackage(pkg) }
             onLogoutRequested: { root.doLogout() }
             onSettingsRequested: { root.currentView = "settings" }
+            onServerConfigSaved: function(sUrl, cCert, cKey) {
+              root.saveSettings({
+                server_url: sUrl,
+                client_cert_path: cCert,
+                client_key_path: cKey
+              })
+            }
           }
 
           // Mode C: Settings View
