@@ -37,6 +37,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     #[command(about = "Manage configuration")]
     Config {

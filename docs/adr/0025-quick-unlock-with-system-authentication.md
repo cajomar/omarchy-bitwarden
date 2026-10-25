@@ -1,10 +1,10 @@
-# ADR 0024: Quick Unlock with System Authentication
+# ADR 0025: Quick Unlock with System Authentication
 
 ## Status
 Proposed
 
 ## Context
-The vault locks on screen lock, suspend, idle timeout and the maximum session lifetime (Security Handbook Rule 3, Rule 9), and unlocking always takes the master password. On Omarchy the screen locks after a few minutes idle, so with the SSH agent (ADR 0023) a normal working day means typing the master password into the overlay many times, usually because `ssh` or `git` needed a key.
+The vault locks on screen lock, suspend, idle timeout and the maximum session lifetime (Security Handbook Rule 3, Rule 9), and unlocking always takes the master password. On Omarchy the screen locks after a few minutes idle, so with the SSH agent (ADR 0024) a normal working day means typing the master password into the overlay many times, usually because `ssh` or `git` needed a key.
 
 Desktop password managers solve this with "unlock with system authentication": after one master-password unlock per session, later unlocks use the OS prompt (login password or fingerprint). Bitwarden's Linux desktop app does this through polkit, keeping a key in the Secret Service keyring.
 

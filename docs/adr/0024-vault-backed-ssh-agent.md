@@ -1,4 +1,4 @@
-# ADR 0023: Vault-Backed OpenSSH Agent with Notification Prompts
+# ADR 0024: Vault-Backed OpenSSH Agent with Notification Prompts
 
 ## Status
 Proposed
