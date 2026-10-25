@@ -256,10 +256,7 @@ fi
             args_file.display()
         );
 
-        fs::write(&mock_wl, script).unwrap();
-        let mut perms = fs::metadata(&mock_wl).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&mock_wl, perms).unwrap();
+        crate::write_test_executable(&mock_wl, script);
 
         let mgr = ClipboardManager::new(mock_wl.to_str().unwrap());
 
@@ -321,10 +318,7 @@ fi
             args_file.display()
         );
 
-        fs::write(&mock_wl, script).unwrap();
-        let mut perms = fs::metadata(&mock_wl).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&mock_wl, perms).unwrap();
+        crate::write_test_executable(&mock_wl, script);
 
         let mgr = ClipboardManager::new(mock_wl.to_str().unwrap())
             .with_generation_path(dir.path().join("clipboard_gen"))
@@ -362,10 +356,7 @@ fi
             args_file.display()
         );
 
-        fs::write(&mock_wl, script).unwrap();
-        let mut perms = fs::metadata(&mock_wl).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&mock_wl, perms).unwrap();
+        crate::write_test_executable(&mock_wl, script);
 
         let mgr = ClipboardManager::new(mock_wl.to_str().unwrap())
             .with_generation_path(dir.path().join("clipboard_gen"))
@@ -416,10 +407,7 @@ fi
             args_file.display()
         );
 
-        fs::write(&mock_wl, script).unwrap();
-        let mut perms = fs::metadata(&mock_wl).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&mock_wl, perms).unwrap();
+        crate::write_test_executable(&mock_wl, script);
 
         let mgr = ClipboardManager::new(mock_wl.to_str().unwrap())
             .with_generation_path(dir.path().join("clipboard_gen"))

@@ -20,13 +20,20 @@ use std::os::unix::process::CommandExt;
 /// Precedence:
 /// 1. `XDG_RUNTIME_DIR`: Verified to exist, owned by current UID, and not a symlink.
 /// 2. Fallback: Creates an isolated `/tmp/omawarden-runtime-{uid}/` directory with mode `0700`.
+///
+/// Tests never resolve to the login session's `/run/user/{uid}`: some send `stop`
+/// or start a daemon, which would lock the user's real vault and drop their SSH agent.
 pub fn get_runtime_dir() -> PathBuf {
     let current_uid = unsafe { libc::getuid() };
 
     if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(runtime_dir);
+        let is_session_dir = p == Path::new(&format!("/run/user/{}", current_uid));
         if let Ok(meta) = fs::symlink_metadata(&p) {
-            if !meta.file_type().is_symlink() && meta.uid() == current_uid {
+            if !meta.file_type().is_symlink()
+                && meta.uid() == current_uid
+                && !(cfg!(test) && is_session_dir)
+            {
                 return p;
             }
         }
@@ -102,10 +109,37 @@ pub fn validate_socket_path(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What to do about a running daemon built from a different commit.
+#[derive(Debug, PartialEq)]
+enum DaemonCheck {
+    UpToDate,
+    /// Mismatched but unlocked: replacing it would lock the vault and drop
+    /// the SSH agent socket mid-use, so leave it until it locks.
+    Defer,
+    Replace,
+}
+
+fn check_running_daemon(ping: &Value, our_commit: &str) -> DaemonCheck {
+    let running_commit = ping.get("commit").and_then(|v| v.as_str()).unwrap_or("");
+    if running_commit == our_commit {
+        DaemonCheck::UpToDate
+    } else if ping.get("unlocked").and_then(|v| v.as_bool()) == Some(true) {
+        DaemonCheck::Defer
+    } else {
+        DaemonCheck::Replace
+    }
+}
+
 pub fn ensure_daemon_running() {
     if let Some(resp) = send_daemon_request(&json!({ "action": "ping" })) {
-        let running_commit = resp.get("commit").and_then(|v| v.as_str()).unwrap_or("");
-        if running_commit == env!("GIT_HASH") {
+        let check = check_running_daemon(&resp, env!("GIT_HASH"));
+        if check == DaemonCheck::Defer {
+            crate::log_info!(
+                "omawarden:daemon",
+                "Running daemon is from another build but the vault is unlocked; keeping it until it locks"
+            );
+        }
+        if check != DaemonCheck::Replace {
             return;
         }
         // Outdated daemon running: gracefully stop it so we can spawn the latest binary version
@@ -201,6 +235,7 @@ pub struct DaemonState {
     pub auto_lock_duration: Mutex<Duration>,
     pub unlocked_at: Mutex<Option<Instant>>,
     pub max_session_lifetime: Mutex<Duration>,
+    pub ssh_agent: Arc<crate::ssh_agent::SshAgent>,
 }
 
 impl DaemonState {
@@ -212,6 +247,7 @@ impl DaemonState {
             auto_lock_duration: Mutex::new(Duration::from_secs(auto_lock_minutes * 60)),
             unlocked_at: Mutex::new(None),
             max_session_lifetime: Mutex::new(Duration::from_secs(12 * 3600)),
+            ssh_agent: Arc::new(crate::ssh_agent::SshAgent::default()),
         }
     }
 
@@ -371,6 +407,10 @@ pub fn run_daemon_server(state: Arc<DaemonState>) -> std::io::Result<()> {
     let mut perms = fs::metadata(&socket_path)?.permissions();
     perms.set_mode(0o600);
     fs::set_permissions(&socket_path, perms)?;
+
+    if let Err(e) = crate::ssh_agent::apply(&state) {
+        crate::log_error!("omawarden:daemon", "SSH agent failed to start: {}", e);
+    }
 
     let state_clone = state.clone();
     std::thread::spawn(move || loop {
@@ -620,15 +660,38 @@ fn handle_client(mut stream: UnixStream, state: Arc<DaemonState>) -> std::io::Re
             "pong": true,
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("GIT_HASH"),
+            "unlocked": is_unlocked,
         }),
         "stop" => {
             state.lock();
+            crate::ssh_agent::remove_socket();
             crate::attachment::clear_preview_attachments(None);
             let _ = writeln!(stream, "{}", json!({ "ok": true }));
             let _ = stream.flush();
             std::process::exit(0);
         }
         "status" => state.vault_mgr.get_status(),
+        // SSH agent confirmations: the overlay lists pending prompts and answers them.
+        "ssh_agent_apply" => match crate::ssh_agent::apply(&state) {
+            Ok(_) => json!({ "ok": true, "running": crate::ssh_agent::is_running(&state) }),
+            Err(e) => json!({ "ok": false, "error": format!("SSH agent: {e}") }),
+        },
+        "ssh_agent_status" => json!({
+            "ok": true,
+            "running": crate::ssh_agent::is_running(&state),
+            "socket": crate::ssh_agent::socket_path(),
+        }),
+        "ssh_agent_pending" => json!({ "ok": true, "prompts": state.ssh_agent.pending() }),
+        "ssh_agent_reply" => {
+            let id = req.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let decision = crate::ssh_agent::Decision {
+                approve: req
+                    .get("approve")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            };
+            json!({ "ok": true, "delivered": state.ssh_agent.reply(id, decision) })
+        }
         "unlock" => {
             let pwd = req.get("password").and_then(|v| v.as_str()).unwrap_or("");
             match state.unlock(pwd) {
@@ -1085,6 +1148,177 @@ mod tests {
         let search_res = send_req(json!({ "action": "search", "query": "test" }));
         assert!(search_res.is_array());
         assert!(*state.last_activity.lock().unwrap() > past);
+    }
+
+    #[test]
+    fn test_ssh_agent_ipc_actions() {
+        let _lock = crate::env_lock();
+        let dir = tempdir().unwrap();
+        let runtime = tempdir().unwrap();
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        let old_config = std::env::var_os("OMAWARDEN_CONFIG_DIR");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        std::env::set_var("OMAWARDEN_CONFIG_DIR", dir.path());
+
+        let state = Arc::new(DaemonState::new(
+            StorageManager::new(dir.path().join("daemon_data.json")),
+            15,
+        ));
+        let send_req = |req: Value| -> Value {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let st = state.clone();
+            let handle = std::thread::spawn(move || {
+                let _ = handle_client(server, st);
+            });
+            client.write_all(format!("{}\n", req).as_bytes()).unwrap();
+            client.flush().unwrap();
+            let mut line = String::new();
+            BufReader::new(client).read_line(&mut line).unwrap();
+            handle.join().unwrap();
+            serde_json::from_str(&line).unwrap()
+        };
+
+        // Disabled by default: applying starts nothing.
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["running"], false);
+        let res = send_req(json!({ "action": "ssh_agent_status" }));
+        assert_eq!(res["running"], false);
+        assert_eq!(
+            res["socket"],
+            json!(runtime.path().join("omawarden-ssh-agent.sock"))
+        );
+
+        // Enabled: applying binds the socket.
+        let mut cfg = crate::config::ConfigManager::default().load();
+        cfg.ssh_agent_enabled = true;
+        fs::write(
+            dir.path().join(crate::config::DEFAULT_CONFIG_FILENAME),
+            serde_json::to_string(&cfg).unwrap(),
+        )
+        .unwrap();
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(
+            (res["ok"].clone(), res["running"].clone()),
+            (json!(true), json!(true))
+        );
+        assert_eq!(
+            send_req(json!({ "action": "ssh_agent_status" }))["running"],
+            true
+        );
+
+        // Nothing is waiting for an answer.
+        let res = send_req(json!({ "action": "ssh_agent_pending" }));
+        assert_eq!(res["prompts"], json!([]));
+        let res = send_req(json!({ "action": "ssh_agent_reply", "id": 42, "approve": true }));
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["delivered"], false);
+        let res = send_req(json!({ "action": "ssh_agent_reply" }));
+        assert_eq!(
+            res["delivered"], false,
+            "missing id and approve are tolerated"
+        );
+
+        // Disabled again: applying stops it and removes the socket.
+        let write_enabled = |on: bool| {
+            let mut cfg = crate::config::ConfigManager::default().load();
+            cfg.ssh_agent_enabled = on;
+            fs::write(
+                dir.path().join(crate::config::DEFAULT_CONFIG_FILENAME),
+                serde_json::to_string(&cfg).unwrap(),
+            )
+            .unwrap();
+        };
+        write_enabled(false);
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["running"], false);
+        assert!(!crate::ssh_agent::socket_path().exists());
+
+        // A path that can't be bound is reported.
+        std::os::unix::fs::symlink("/tmp/elsewhere", crate::ssh_agent::socket_path()).unwrap();
+        write_enabled(true);
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["ok"], false);
+        assert!(res["error"].as_str().unwrap().starts_with("SSH agent: "));
+
+        for (k, v) in [
+            ("XDG_RUNTIME_DIR", old_runtime),
+            ("OMAWARDEN_CONFIG_DIR", old_config),
+        ] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    #[test]
+    fn test_ensure_daemon_running_keeps_a_running_daemon_it_should_not_replace() {
+        let _lock = crate::env_lock();
+        let runtime = tempdir().unwrap();
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+
+        // A daemon that answers every ping the same way; if it were replaced,
+        // a second daemon would be spawned and the connection count would
+        // show it.
+        let listener = std::os::unix::net::UnixListener::bind(get_socket_path()).unwrap();
+        for reply in [
+            json!({ "ok": true, "commit": env!("GIT_HASH"), "unlocked": false }),
+            json!({ "ok": true, "commit": "another-build", "unlocked": true }),
+        ] {
+            let server = {
+                let listener = listener.try_clone().unwrap();
+                let reply = reply.clone();
+                std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    BufReader::new(stream.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&line).unwrap()["action"],
+                        "ping"
+                    );
+                    writeln!(stream, "{reply}").unwrap();
+                })
+            };
+            ensure_daemon_running();
+            server.join().unwrap();
+        }
+
+        old_runtime.map_or_else(
+            || std::env::remove_var("XDG_RUNTIME_DIR"),
+            |v| std::env::set_var("XDG_RUNTIME_DIR", v),
+        );
+    }
+
+    #[test]
+    fn test_outdated_daemon_is_only_replaced_while_locked() {
+        let ping = |commit: &str, unlocked: Option<bool>| {
+            let mut v = json!({ "ok": true, "commit": commit });
+            if let Some(u) = unlocked {
+                v["unlocked"] = json!(u);
+            }
+            v
+        };
+        assert_eq!(
+            check_running_daemon(&ping("abc", Some(true)), "abc"),
+            DaemonCheck::UpToDate
+        );
+        assert_eq!(
+            check_running_daemon(&ping("old", Some(true)), "abc"),
+            DaemonCheck::Defer
+        );
+        assert_eq!(
+            check_running_daemon(&ping("old", Some(false)), "abc"),
+            DaemonCheck::Replace
+        );
+        // Daemons predating the field are replaced as before.
+        assert_eq!(
+            check_running_daemon(&ping("old", None), "abc"),
+            DaemonCheck::Replace
+        );
     }
 
     #[test]

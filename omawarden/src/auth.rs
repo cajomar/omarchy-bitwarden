@@ -989,15 +989,12 @@ impl AuthManager {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+
     use tempfile::tempdir;
 
     fn create_test_mock_keyring(dir: &std::path::Path) -> KeyringManager {
         let script_path = dir.join("mock-secret-tool");
-        fs::write(&script_path, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, "#!/bin/sh\nexit 0\n");
         KeyringManager::new(script_path.to_str().unwrap())
     }
 
@@ -1130,10 +1127,7 @@ mod tests {
         let storage_mgr = StorageManager::new(storage_path);
 
         let script_path = dir.path().join("mock-secret-tool");
-        fs::write(&script_path, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, "#!/bin/sh\nexit 0\n");
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
         let auth_mgr = AuthManager::new(
@@ -1410,7 +1404,6 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
         let storage_path = dir.path().join("test_expired_renewable.json");
@@ -1469,10 +1462,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         let auth_mgr = AuthManager::new(
@@ -1519,7 +1509,6 @@ esac
     #[test]
     fn test_auth_status_token_auto_migration() {
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
         let storage_path = dir.path().join("test_migration.json");
@@ -1578,10 +1567,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         let auth_mgr = AuthManager::new(
@@ -1624,7 +1610,6 @@ esac
     #[test]
     fn test_auth_status_token_migration_failure_preserves_disk_tokens() {
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
         let storage_path = dir.path().join("test_migration_failure.json");
@@ -1633,10 +1618,7 @@ esac
         let script_path = dir.path().join("mock-secret-tool-fail");
         // Script is an executable that always exits with code 1
         let script = "#!/bin/sh\nexit 1\n";
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         // keyring is_available() will return true because the binary exists, but store will fail
@@ -1677,7 +1659,6 @@ esac
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().unwrap();
         let storage_path = dir.path().join("test_custom_url.json");
@@ -1728,10 +1709,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         // Default CLI server_url is bitwarden.com
@@ -2097,7 +2075,7 @@ esac
     fn test_login_password_keyring_store_failure_fails_closed() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let dir = tempdir().unwrap();
@@ -2106,10 +2084,7 @@ esac
 
         // Executable script that always fails
         let script_path = dir.path().join("mock-secret-tool-fail");
-        fs::write(&script_path, "#!/bin/sh\nexit 1\n").unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, "#!/bin/sh\nexit 1\n");
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         assert!(mock_keyring.is_available());
@@ -2220,7 +2195,7 @@ esac
     fn test_login_apikey_keyring_store_failure_fails_closed() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let dir = tempdir().unwrap();
@@ -2229,10 +2204,7 @@ esac
 
         // Executable script that always fails
         let script_path = dir.path().join("mock-secret-tool-fail");
-        fs::write(&script_path, "#!/bin/sh\nexit 1\n").unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, "#!/bin/sh\nexit 1\n");
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
         assert!(mock_keyring.is_available());
@@ -2288,6 +2260,7 @@ esac
 
     #[test]
     fn test_login_password_auto_unlocks_daemon() {
+        let _lock = crate::env_lock();
         use std::io::{BufRead, BufReader, Read, Write};
         use std::net::TcpListener;
         use std::os::unix::net::UnixListener;

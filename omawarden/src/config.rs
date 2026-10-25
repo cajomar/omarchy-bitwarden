@@ -49,6 +49,12 @@ pub struct Config {
     pub client_key_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_cert_server: Option<String>,
+    /// Serve the vault's SSH keys on $XDG_RUNTIME_DIR/omawarden-ssh-agent.sock.
+    #[serde(default)]
+    pub ssh_agent_enabled: bool,
+    /// When to confirm signatures: "always", "first-use" (until logout) or "never".
+    #[serde(default = "default_ssh_agent_confirm")]
+    pub ssh_agent_confirm: String,
 }
 
 fn default_server_url() -> String {
@@ -81,6 +87,9 @@ fn default_show_website_icons() -> bool {
 fn default_remember_last_search() -> bool {
     DEFAULT_REMEMBER_LAST_SEARCH
 }
+fn default_ssh_agent_confirm() -> String {
+    "first-use".to_string()
+}
 fn default_max_attachment_size_mb() -> u64 {
     DEFAULT_MAX_ATTACHMENT_SIZE_MB
 }
@@ -103,6 +112,8 @@ impl Default for Config {
             client_cert_path: None,
             client_key_path: None,
             client_cert_server: None,
+            ssh_agent_enabled: false,
+            ssh_agent_confirm: default_ssh_agent_confirm(),
         }
     }
 }
@@ -240,6 +251,16 @@ impl ConfigManager {
         if let Some(ref v) = options.identity_url {
             Self::validate_url_scheme_security(v, "identity_url")?;
         }
+        // Checked before anything is purged for a server change, so a bad
+        // value can't leave the settings half applied.
+        if let Some(ref v) = options.ssh_agent_confirm {
+            if !matches!(v.as_str(), "always" | "first-use" | "never") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("ssh_agent_confirm must be always, first-use or never (got {v:?})"),
+                ));
+            }
+        }
 
         let old_server_norm = cfg.server_url.trim().trim_end_matches('/');
         let server_changed = if let Some(ref new_url) = options.server_url {
@@ -314,6 +335,12 @@ impl ConfigManager {
         if let Some(v) = options.remember_last_search {
             cfg.remember_last_search = v;
         }
+        if let Some(v) = options.ssh_agent_enabled {
+            cfg.ssh_agent_enabled = v;
+        }
+        if let Some(v) = options.ssh_agent_confirm {
+            cfg.ssh_agent_confirm = v;
+        }
         if let Some(v) = options.max_attachment_size_mb {
             cfg.max_attachment_size_mb = v;
         }
@@ -374,6 +401,8 @@ pub struct ConfigUpdateOptions {
     pub max_attachment_size_mb: Option<u64>,
     pub client_cert_path: Option<String>,
     pub client_key_path: Option<String>,
+    pub ssh_agent_enabled: Option<bool>,
+    pub ssh_agent_confirm: Option<String>,
 }
 
 #[cfg(test)]
@@ -538,14 +567,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            let _ = fs::set_permissions(&script_path, perms);
-        }
+        crate::write_test_executable(&script_path, script);
         script_path.to_str().unwrap().to_string()
     }
 
@@ -909,6 +931,95 @@ esac
         let err = res.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("Remote servers must use HTTPS"));
+    }
+
+    #[test]
+    fn test_update_config_ssh_agent_settings() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let storage_path = dir.path().join("data.json");
+        let mock_script = create_mock_secret_tool(dir.path());
+
+        let config_mgr = ConfigManager::new(Some(&config_path));
+        let storage_mgr = crate::storage::StorageManager::new(storage_path.clone());
+        let keyring_mgr = crate::keyring::KeyringManager::new(&mock_script);
+
+        let (cfg, _) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    log_level: Some("DEBUG".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert_eq!(cfg.log_level, "debug", "log levels are normalised");
+
+        let defaults = config_mgr.load();
+        assert!(!defaults.ssh_agent_enabled);
+        assert_eq!(defaults.ssh_agent_confirm, "first-use");
+
+        for confirm in ["always", "first-use", "never"] {
+            let (cfg, _) = config_mgr
+                .update_config(
+                    ConfigUpdateOptions {
+                        ssh_agent_enabled: Some(true),
+                        ssh_agent_confirm: Some(confirm.to_string()),
+                        ..Default::default()
+                    },
+                    &storage_mgr,
+                    &keyring_mgr,
+                )
+                .unwrap();
+            assert!(cfg.ssh_agent_enabled);
+            assert_eq!(cfg.ssh_agent_confirm, confirm);
+            assert_eq!(config_mgr.load().ssh_agent_confirm, confirm);
+        }
+
+        let (cfg, _) = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    ssh_agent_enabled: Some(false),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap();
+        assert!(!cfg.ssh_agent_enabled);
+        assert_eq!(cfg.ssh_agent_confirm, "never", "left alone when not given");
+    }
+
+    #[test]
+    fn test_update_config_rejects_unknown_ssh_agent_confirm_before_any_purge() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let storage_path = dir.path().join("data.json");
+        let mock_script = create_mock_secret_tool(dir.path());
+
+        let config_mgr = ConfigManager::new(Some(&config_path));
+        let storage_mgr = crate::storage::StorageManager::new(storage_path.clone());
+        let keyring_mgr = crate::keyring::KeyringManager::new(&mock_script);
+        fs::write(&storage_path, "{}").unwrap();
+
+        // Also changes the server, which would purge the vault cache.
+        let err = config_mgr
+            .update_config(
+                ConfigUpdateOptions {
+                    server_url: Some("https://vault.example.org".to_string()),
+                    ssh_agent_confirm: Some("Always".to_string()),
+                    ..Default::default()
+                },
+                &storage_mgr,
+                &keyring_mgr,
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("ssh_agent_confirm"));
+        assert!(storage_path.exists(), "the vault cache was not purged");
+        assert_eq!(config_mgr.load().ssh_agent_confirm, "first-use");
+        assert_eq!(config_mgr.load().server_url, default_server_url());
     }
 
     #[test]
