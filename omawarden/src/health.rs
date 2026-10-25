@@ -24,15 +24,65 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
     let server_clean = server_url.trim_end_matches('/');
 
     // 1. Check server reachability
-    let client = crate::api::build_http_client(Duration::from_secs(4));
+    let client =
+        match crate::api::build_http_client_for_url(Duration::from_secs(4), None, Some(server_url))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return HealthStatus {
+                    installed: true,
+                    ok: false,
+                    version: Some(version),
+                    commit: if commit != "unknown" {
+                        Some(commit)
+                    } else {
+                        None
+                    },
+                    build_date: if build_date != "unknown" {
+                        Some(build_date)
+                    } else {
+                        None
+                    },
+                    server_url: server_url.to_string(),
+                    server_reachable: false,
+                    keyring_available: which::which("secret-tool").is_ok(),
+                    clipboard_available: which::which("wl-copy").is_ok(),
+                    error: Some(format!("Client mTLS certificate error: {}", e)),
+                };
+            }
+        };
 
     let env_urls = crate::api::EnvironmentUrls::resolve(server_url, None);
     let prelogin_url = format!("{}/accounts/prelogin", env_urls.identity_url);
     let legacy_prelogin_url = format!("{}/accounts/prelogin", env_urls.api_url);
-    let server_reachable = client.get(&prelogin_url).send().is_ok()
-        || client.get(&legacy_prelogin_url).send().is_ok()
-        || client.get(&env_urls.base_url).send().is_ok()
-        || client.get(server_clean).send().is_ok();
+
+    let format_req_error = |mut err: &dyn std::error::Error| -> String {
+        let mut s = err.to_string();
+        while let Some(src) = err.source() {
+            s.push_str(" -> ");
+            s.push_str(&src.to_string());
+            err = src;
+        }
+        s
+    };
+
+    let reachability_err = match client.get(&prelogin_url).send() {
+        Ok(_) => None,
+        Err(e) => match client.get(&legacy_prelogin_url).send() {
+            Ok(_) => None,
+            Err(_) => match client.get(&env_urls.base_url).send() {
+                Ok(_) => None,
+                Err(_) => match client.get(server_clean).send() {
+                    Ok(_) => None,
+                    Err(_) => Some(format!(
+                        "Cannot reach Bitwarden server: {}",
+                        format_req_error(&e)
+                    )),
+                },
+            },
+        },
+    };
+    let server_reachable = reachability_err.is_none();
 
     // 2. Check Keyring (secret-tool)
     let keyring_available = which::which("secret-tool").is_ok();
@@ -60,11 +110,8 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
         server_reachable,
         keyring_available,
         clipboard_available,
-        error: if !server_reachable {
-            Some(
-                "Cannot reach Bitwarden server. Please check your network or server URL."
-                    .to_string(),
-            )
+        error: if let Some(err) = reachability_err {
+            Some(err)
         } else if !keyring_available {
             Some("Linux Secret Service (secret-tool) is not available.".to_string())
         } else if !clipboard_available {

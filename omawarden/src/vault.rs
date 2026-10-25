@@ -745,6 +745,24 @@ impl VaultManager {
             .unwrap_or_default()
     }
 
+    /// Name and SSH data of the unlocked vault's SSH key items, without
+    /// copying the rest of the vault. Empty while locked, and never asks the
+    /// daemon: the SSH agent runs inside it.
+    pub fn ssh_key_items(&self) -> Vec<(String, SshMetadata)> {
+        if !self.is_unlocked() {
+            return Vec::new();
+        }
+        self.decrypted_items
+            .read()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| Some((i.name.clone(), i.ssh_key.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn search_items(&self, query: &str, category: Option<&str>) -> Vec<VaultItem> {
         let is_unlocked = self.is_unlocked();
         if !is_unlocked {
@@ -1775,7 +1793,7 @@ mod tests {
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1883,10 +1901,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -1946,7 +1961,7 @@ esac
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2031,10 +2046,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -2100,7 +2112,6 @@ esac
     #[test]
     fn test_vault_sync_network_error_preserves_tokens() {
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
         let storage_path = dir.path().join("vault_reauth_net_fail.json");
@@ -2159,10 +2170,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 
@@ -2210,7 +2218,7 @@ esac
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
+
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2289,10 +2297,7 @@ esac
             store_dir.display()
         );
 
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+        crate::write_test_executable(&script_path, script);
 
         let mock_keyring = KeyringManager::new(script_path.to_str().unwrap());
 

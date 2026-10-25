@@ -3,7 +3,9 @@ use omawarden::attachment::get_attachment;
 use omawarden::auth::AuthManager;
 use omawarden::clipboard::ClipboardManager;
 use omawarden::config::{ConfigManager, ConfigUpdateOptions};
-use omawarden::daemon::{run_daemon_server, send_daemon_request, DaemonState};
+use omawarden::daemon::{
+    ensure_daemon_running, run_daemon_server, send_daemon_request, DaemonState,
+};
 use omawarden::health::check_system_health;
 use omawarden::hook::install_lock_hook;
 use omawarden::keyring::KeyringManager;
@@ -35,6 +37,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     #[command(about = "Manage configuration")]
     Config {
@@ -130,6 +133,11 @@ enum Commands {
         #[command(subcommand)]
         action: SshKeyAction,
     },
+    #[command(name = "ssh-agent", about = "SSH agent backed by the vault's SSH keys")]
+    SshAgent {
+        #[command(subcommand)]
+        action: SshAgentAction,
+    },
     #[command(about = "Run omawarden background daemon")]
     Daemon {
         #[arg(long)]
@@ -199,6 +207,23 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum SshAgentAction {
+    #[command(about = "Show whether the agent is enabled and running, and its socket (JSON)")]
+    Status,
+    #[command(about = "List signatures waiting for confirmation (JSON)")]
+    Pending,
+    #[command(about = "Answer a pending confirmation")]
+    Reply {
+        #[arg(help = "Prompt id from `ssh-agent pending`")]
+        id: u64,
+        #[arg(long, conflicts_with = "deny", required_unless_present = "deny")]
+        allow: bool,
+        #[arg(long)]
+        deny: bool,
+    },
+}
+
+#[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum ConfigAction {
     #[command(about = "Get current configuration or a specific key")]
@@ -232,6 +257,17 @@ enum ConfigAction {
         remember_last_search: Option<String>,
         #[arg(long, help = "Maximum allowed attachment size in MB (default: 500)")]
         max_attachment_size: Option<u64>,
+        #[arg(
+            long,
+            help = "Path to client certificate PEM file for mTLS (pass \"\" to clear)"
+        )]
+        client_cert: Option<String>,
+        #[arg(long, help = "Path to separate client private key PEM file for mTLS")]
+        client_key: Option<String>,
+        #[arg(long, help = "Serve vault SSH keys as an SSH agent (true/false)")]
+        ssh_agent: Option<String>,
+        #[arg(long, help = "Confirm SSH signatures: always, first-use or never")]
+        ssh_agent_confirm: Option<String>,
     },
 }
 
@@ -529,6 +565,17 @@ fn main() -> ExitCode {
                         "max_attachment_size_mb" | "max_attachment_size" => {
                             println!("{}", cfg.max_attachment_size_mb)
                         }
+                        "client_cert_path" | "client_cert" => {
+                            println!("{}", cfg.client_cert_path.as_deref().unwrap_or(""))
+                        }
+                        "client_key_path" | "client_key" => {
+                            println!("{}", cfg.client_key_path.as_deref().unwrap_or(""))
+                        }
+                        "client_cert_server" => {
+                            println!("{}", cfg.client_cert_server.as_deref().unwrap_or(""))
+                        }
+                        "ssh_agent_enabled" | "ssh_agent" => println!("{}", cfg.ssh_agent_enabled),
+                        "ssh_agent_confirm" => println!("{}", cfg.ssh_agent_confirm),
                         _ => {
                             eprintln!("Unknown configuration key: {}", k);
                             return ExitCode::FAILURE;
@@ -552,6 +599,10 @@ fn main() -> ExitCode {
                 show_website_icons,
                 remember_last_search,
                 max_attachment_size,
+                client_cert,
+                client_key,
+                ssh_agent,
+                ssh_agent_confirm,
             } => {
                 let storage_mgr = match cli.config.as_deref() {
                     Some(cp) => {
@@ -586,6 +637,55 @@ fn main() -> ExitCode {
                     matches!(lower.as_str(), "true" | "1" | "yes")
                 });
 
+                if let Some(ref cert_str) = client_cert {
+                    let trimmed = cert_str.trim();
+                    if !trimmed.is_empty() {
+                        let cert_path = std::path::Path::new(trimmed);
+                        if !cert_path.exists() {
+                            eprintln!(
+                                "Error: Client certificate file not found: '{}'",
+                                cert_path.display()
+                            );
+                            return ExitCode::FAILURE;
+                        }
+                        let key_target = if let Some(ref key_str) = client_key {
+                            let key_trimmed = key_str.trim();
+                            if !key_trimmed.is_empty() {
+                                std::path::Path::new(key_trimmed)
+                            } else {
+                                cert_path
+                            }
+                        } else {
+                            cert_path
+                        };
+
+                        if !key_target.exists() {
+                            eprintln!(
+                                "Error: Client private key file not found: '{}'",
+                                key_target.display()
+                            );
+                            return ExitCode::FAILURE;
+                        }
+
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = std::fs::metadata(key_target) {
+                                let mode = meta.permissions().mode() & 0o777;
+                                if mode & 0o077 != 0 {
+                                    eprintln!(
+                                        "Error: Insecure permissions ({:#o}) on client private key '{}': file must be restricted to 0600 or 0400 (run `chmod 600 {}`)",
+                                        mode,
+                                        key_target.display(),
+                                        key_target.display()
+                                    );
+                                    return ExitCode::FAILURE;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let options = ConfigUpdateOptions {
                     server_url,
                     identity_url,
@@ -599,6 +699,12 @@ fn main() -> ExitCode {
                     show_website_icons: parsed_show_website_icons,
                     remember_last_search: parsed_remember_last_search,
                     max_attachment_size_mb: max_attachment_size,
+                    client_cert_path: client_cert,
+                    client_key_path: client_key,
+                    ssh_agent_enabled: ssh_agent
+                        .as_ref()
+                        .map(|v| matches!(v.trim().to_lowercase().as_str(), "true" | "1" | "yes")),
+                    ssh_agent_confirm: ssh_agent_confirm.clone(),
                 };
 
                 let (updated_cfg, _server_changed) =
@@ -610,6 +716,10 @@ fn main() -> ExitCode {
                         }
                     };
                 cfg = updated_cfg;
+                if ssh_agent.is_some() {
+                    // Start or stop the agent in the running daemon (no restart, so no lock).
+                    let _ = send_daemon_request(&json!({ "action": "ssh_agent_apply" }));
+                }
                 if let Some(lock_mins) = auto_lock {
                     let _ = send_daemon_request(&json!({
                         "action": "set_auto_lock",
@@ -665,6 +775,39 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         },
+
+        Commands::SshAgent { action } => {
+            let request = match action {
+                SshAgentAction::Status => json!({ "action": "ssh_agent_status" }),
+                SshAgentAction::Pending => json!({ "action": "ssh_agent_pending" }),
+                SshAgentAction::Reply { id, allow, deny: _ } => {
+                    json!({ "action": "ssh_agent_reply", "id": id, "approve": allow })
+                }
+            };
+            ensure_daemon_running();
+            match send_daemon_request(&request) {
+                Some(mut resp) => {
+                    if let Some(obj) = resp.as_object_mut() {
+                        obj.insert("enabled".into(), json!(cfg.ssh_agent_enabled));
+                        obj.insert("confirm".into(), json!(cfg.ssh_agent_confirm));
+                    }
+                    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+                    let delivered = resp
+                        .get("delivered")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) && delivered {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                None => {
+                    eprintln!("The omawarden daemon is not responding.");
+                    ExitCode::FAILURE
+                }
+            }
+        }
 
         Commands::Health => {
             let status = check_system_health(&cfg.server_url);
@@ -2395,6 +2538,50 @@ mod tests {
                         ..
                     },
             } => assert_eq!(max_attachment_size, Some(250)),
+            _ => panic!("Expected Commands::Config with ConfigAction::Set"),
+        }
+    }
+
+    #[test]
+    fn test_cli_client_cert_and_key_arg_parsing() {
+        let cli_default = Cli::try_parse_from(["omawarden", "config", "set"]).unwrap();
+        match cli_default.command {
+            Commands::Config {
+                action:
+                    ConfigAction::Set {
+                        client_cert,
+                        client_key,
+                        ..
+                    },
+            } => {
+                assert_eq!(client_cert, None);
+                assert_eq!(client_key, None);
+            }
+            _ => panic!("Expected Commands::Config with ConfigAction::Set"),
+        }
+
+        let cli_custom = Cli::try_parse_from([
+            "omawarden",
+            "config",
+            "set",
+            "--client-cert",
+            "/path/to/cert.pem",
+            "--client-key",
+            "/path/to/key.pem",
+        ])
+        .unwrap();
+        match cli_custom.command {
+            Commands::Config {
+                action:
+                    ConfigAction::Set {
+                        client_cert,
+                        client_key,
+                        ..
+                    },
+            } => {
+                assert_eq!(client_cert, Some("/path/to/cert.pem".to_string()));
+                assert_eq!(client_key, Some("/path/to/key.pem".to_string()));
+            }
             _ => panic!("Expected Commands::Config with ConfigAction::Set"),
         }
     }

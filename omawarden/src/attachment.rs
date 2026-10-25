@@ -366,7 +366,28 @@ pub fn get_attachment(
         env_urls.api_url, item_id, attachment_id
     );
 
-    let client = crate::api::build_http_client(std::time::Duration::from_secs(45));
+    let client = match crate::api::build_http_client_for_url(
+        std::time::Duration::from_secs(45),
+        None,
+        Some(&download_url),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = format!("Failed to build HTTP client for attachment download: {}", e);
+            crate::log_error!("omawarden:attachment", "{}", err_msg);
+            return AttachmentResponse {
+                ok: false,
+                error: Some(err_msg),
+                path: None,
+                filename: None,
+                action: None,
+                is_image: None,
+                is_text: None,
+                text_content: None,
+                size: None,
+            };
+        }
+    };
 
     let mut download_res = client
         .get(&download_url)
@@ -455,7 +476,18 @@ pub fn get_attachment(
                             format!("{}/{}", env_urls.base_url, url_str)
                         };
 
-                    let mut req = client.get(&full_signed_url);
+                    let storage_client = if is_same_origin(&full_signed_url, &env_urls.base_url) {
+                        client.clone()
+                    } else {
+                        crate::api::build_http_client_for_url(
+                            std::time::Duration::from_secs(45),
+                            None,
+                            Some(&full_signed_url),
+                        )
+                        .unwrap_or_else(|_| client.clone())
+                    };
+
+                    let mut req = storage_client.get(&full_signed_url);
                     if is_same_origin(&full_signed_url, &env_urls.base_url)
                         && !full_signed_url.contains("token=")
                     {
@@ -1341,11 +1373,9 @@ mod tests {
         assert!(!is_same_origin("https://vault.example.com:8443", base));
     }
 
-    static ATTACHMENT_ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn test_attachment_download_rejects_oversized_advertised_content_length() {
-        let _lock = ATTACHMENT_ENV_TEST_MUTEX.lock().unwrap();
+        let _lock = crate::env_lock();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1407,7 +1437,7 @@ mod tests {
 
     #[test]
     fn test_attachment_download_rejects_stream_overflow() {
-        let _lock = ATTACHMENT_ENV_TEST_MUTEX.lock().unwrap();
+        let _lock = crate::env_lock();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();

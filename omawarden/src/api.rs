@@ -530,11 +530,246 @@ pub fn resolve_effective_client_context_internal<F: Fn() -> bool>(
     manifest_path.and_then(probe_plugin_context_from_path)
 }
 
+/// Validates that private key file permissions on POSIX systems are 0600 or 0400.
+#[cfg(unix)]
+pub fn validate_private_key_permissions(path: &Path) -> Result<(), ApiError> {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        ApiError::Http(format!(
+            "Failed to read private key metadata for '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(ApiError::Http(format!(
+            "Insecure permissions ({:#o}) on client private key '{}': file must be restricted to 0600 or 0400",
+            mode,
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn validate_private_key_permissions(_path: &Path) -> Result<(), ApiError> {
+    Ok(())
+}
+
+fn check_rsa_key_strength(key: &rsa::RsaPrivateKey) -> Result<(), ApiError> {
+    use rsa::traits::PublicKeyParts;
+    let bits = key.size() * 8;
+    if bits < 2048 {
+        return Err(ApiError::Crypto(format!(
+            "RSA client key length ({} bits) is below minimum safe threshold (2048 bits)",
+            bits
+        )));
+    }
+    Ok(())
+}
+
+/// Validates that the private key within PEM bytes satisfies minimum cryptographic strength (e.g. RSA >= 2048 bits, EC scalar >= 256 bits).
+pub fn validate_client_key_strength(pem_bytes: &[u8]) -> Result<(), ApiError> {
+    use rsa::pkcs1::DecodeRsaPrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
+
+    let pem_str = std::str::from_utf8(pem_bytes).map_err(|e| {
+        ApiError::Crypto(format!(
+            "Client private key file is not valid UTF-8 PEM: {}",
+            e
+        ))
+    })?;
+
+    if pem_str.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+        return Err(ApiError::Crypto(
+            "Encrypted private keys are not supported. Please use an unencrypted PEM private key restricted to 0600 permissions."
+                .to_string(),
+        ));
+    }
+
+    let mut key_found = false;
+
+    // 1. Check RSA PKCS#1
+    if let Some(start) = pem_str.find("-----BEGIN RSA PRIVATE KEY-----") {
+        if let Some(end) = pem_str[start..].find("-----END RSA PRIVATE KEY-----") {
+            key_found = true;
+            let block = &pem_str[start..start + end + "-----END RSA PRIVATE KEY-----".len()];
+            match rsa::RsaPrivateKey::from_pkcs1_pem(block) {
+                Ok(key) => check_rsa_key_strength(&key)?,
+                Err(e) => {
+                    return Err(ApiError::Crypto(format!(
+                        "Failed to parse PKCS#1 RSA private key: {}",
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    // 2. Check PKCS#8
+    if let Some(start) = pem_str.find("-----BEGIN PRIVATE KEY-----") {
+        if let Some(end) = pem_str[start..].find("-----END PRIVATE KEY-----") {
+            key_found = true;
+            let block = &pem_str[start..start + end + "-----END PRIVATE KEY-----".len()];
+            if let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_pem(block) {
+                check_rsa_key_strength(&key)?;
+            } else {
+                // Not an RSA key; inspect PKCS#8 DER structure for EC or other key types
+                let b64: String = pem_str[start + "-----BEGIN PRIVATE KEY-----".len()..start + end]
+                    .lines()
+                    .collect();
+                let b64_clean = b64.trim();
+                let der =
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64_clean)
+                        .map_err(|e| {
+                        ApiError::Crypto(format!("Invalid base64 in PKCS#8 private key: {}", e))
+                    })?;
+
+                match pkcs8::PrivateKeyInfoRef::try_from(&der[..]) {
+                    Ok(info) => {
+                        // EC / Ed25519 private key scalars must be at least 32 bytes (256 bits).
+                        // eMudhra zero-day vulnerability (weak P-384 keys with 3-8 bits entropy) produces degenerate scalars.
+                        if u32::from(info.private_key.len()) < 32 {
+                            return Err(ApiError::Crypto(
+                                "PKCS#8 client private key scalar is degraded or below 256 bits"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        return Err(ApiError::Crypto(format!(
+                            "Failed to parse PKCS#8 private key structure: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check EC SEC1 Private Key
+    if let Some(start) = pem_str.find("-----BEGIN EC PRIVATE KEY-----") {
+        if let Some(end) = pem_str[start..].find("-----END EC PRIVATE KEY-----") {
+            key_found = true;
+            let b64: String = pem_str[start + "-----BEGIN EC PRIVATE KEY-----".len()..start + end]
+                .lines()
+                .collect();
+            let b64_clean = b64.trim();
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64_clean)
+                    .map_err(|e| {
+                        ApiError::Crypto(format!("Invalid base64 in EC private key: {}", e))
+                    })?;
+
+            // Minimum valid EC SEC1 key for P-256 or higher is ~120 bytes (private scalar at least 32 bytes)
+            if decoded.len() < 32 {
+                return Err(ApiError::Crypto(
+                    "Elliptic curve client private key is corrupted or degraded".to_string(),
+                ));
+            }
+        }
+    }
+
+    if !key_found {
+        return Err(ApiError::Crypto(
+            "No recognized private key found in PEM (expected RSA, EC, or PKCS#8 private key)"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Loads and validates a client certificate and private key from PEM files into reqwest::Identity.
+pub fn load_client_identity_from_pem(
+    cert_path: &Path,
+    key_path: Option<&Path>,
+) -> Result<reqwest::Identity, ApiError> {
+    if !cert_path.exists() {
+        return Err(ApiError::Http(format!(
+            "Client certificate file not found: '{}'",
+            cert_path.display()
+        )));
+    }
+
+    let privkey_path = match key_path {
+        Some(kp) => {
+            if !kp.exists() {
+                return Err(ApiError::Http(format!(
+                    "Client private key file not found: '{}'",
+                    kp.display()
+                )));
+            }
+            kp
+        }
+        None => cert_path,
+    };
+
+    validate_private_key_permissions(privkey_path)?;
+
+    let cert_bytes = std::fs::read(cert_path).map_err(|e| {
+        ApiError::Http(format!(
+            "Failed to read client certificate file '{}': {}",
+            cert_path.display(),
+            e
+        ))
+    })?;
+
+    let combined_pem = match key_path {
+        Some(kp) => {
+            let key_bytes = std::fs::read(kp).map_err(|e| {
+                ApiError::Http(format!(
+                    "Failed to read client private key file '{}': {}",
+                    kp.display(),
+                    e
+                ))
+            })?;
+            let mut combined = cert_bytes;
+            combined.push(b'\n');
+            combined.extend_from_slice(&key_bytes);
+            combined
+        }
+        None => cert_bytes,
+    };
+
+    validate_client_key_strength(&combined_pem)?;
+
+    reqwest::Identity::from_pem(&combined_pem)
+        .map_err(|e| ApiError::Http(format!("Failed to parse client identity PEM: {}", e)))
+}
+
 /// Builds an HTTP blocking client with standard Bitwarden client headers and client-context-aware User-Agent.
 pub fn build_http_client_with_context(
     timeout: Duration,
     client_context: Option<&ClientContext>,
 ) -> Client {
+    build_http_client_for_url(timeout, client_context, None)
+        .unwrap_or_else(|_| Client::builder().build().unwrap_or_default())
+}
+
+/// Builds a default HTTP blocking client with standard Bitwarden client headers and the specified timeout.
+pub fn build_http_client(timeout: Duration) -> Client {
+    build_http_client_for_url(timeout, None, None)
+        .unwrap_or_else(|_| Client::builder().build().unwrap_or_default())
+}
+
+/// Builds an HTTP blocking client optionally targeting a specific server URL for mTLS client certificate presentation.
+pub fn build_http_client_for_url(
+    timeout: Duration,
+    client_context: Option<&ClientContext>,
+    target_url: Option<&str>,
+) -> Result<Client, ApiError> {
+    build_http_client_for_url_with_config(timeout, client_context, target_url, None)
+}
+
+/// Builds an HTTP blocking client with optional configuration override for deterministic mTLS origin gating.
+pub fn build_http_client_for_url_with_config(
+    timeout: Duration,
+    client_context: Option<&ClientContext>,
+    target_url: Option<&str>,
+    config_override: Option<&crate::config::Config>,
+) -> Result<Client, ApiError> {
     let mut default_headers = reqwest::header::HeaderMap::new();
     let ua_str = format_user_agent(client_context);
     let ua_val = reqwest::header::HeaderValue::from_str(&ua_str).unwrap_or_else(|_| {
@@ -554,22 +789,58 @@ pub fn build_http_client_with_context(
         reqwest::header::HeaderValue::from_static(BITWARDEN_DEVICE_TYPE),
     );
 
-    Client::builder()
+    let mut builder = Client::builder()
         .default_headers(default_headers)
-        .timeout(timeout)
-        .build()
-        .unwrap_or_default()
-}
+        .timeout(timeout);
 
-/// Builds a default HTTP blocking client with standard Bitwarden client headers and the specified timeout.
-pub fn build_http_client(timeout: Duration) -> Client {
-    build_http_client_with_context(timeout, None)
+    // Gated mTLS Identity Attachment
+    let loaded_cfg;
+    let cfg = match config_override {
+        Some(c) => c,
+        None => {
+            loaded_cfg = crate::config::ConfigManager::default().load();
+            &loaded_cfg
+        }
+    };
+    if let (Some(cert_path_str), Some(cert_server)) = (
+        cfg.client_cert_path.as_deref(),
+        cfg.client_cert_server.as_deref(),
+    ) {
+        let should_attach = match target_url {
+            Some(t_url) => crate::attachment::is_same_origin(cert_server, t_url),
+            None => crate::attachment::is_same_origin(cert_server, &cfg.server_url),
+        };
+
+        if should_attach {
+            let cert_p = std::path::PathBuf::from(cert_path_str);
+            let key_p = cfg.client_key_path.as_ref().map(std::path::PathBuf::from);
+            match load_client_identity_from_pem(&cert_p, key_p.as_deref()) {
+                Ok(identity) => {
+                    builder = builder.identity(identity);
+                }
+                Err(e) => {
+                    crate::log_error!(
+                        "omawarden:api",
+                        "Failed to load client mTLS identity for origin '{}': {}",
+                        cert_server,
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| ApiError::Http(format!("Failed to build HTTP client: {}", e)))
 }
 
 pub struct BitwardenApiClient {
     pub server_url: String,
     pub urls: EnvironmentUrls,
     client: Client,
+    client_init_error: Option<ApiError>,
 }
 
 impl BitwardenApiClient {
@@ -586,25 +857,52 @@ impl BitwardenApiClient {
         explicit_identity_url: Option<&str>,
         client_context: Option<&ClientContext>,
     ) -> Self {
+        Self::with_options_and_config(server_url, explicit_identity_url, client_context, None)
+    }
+
+    pub fn with_options_and_config(
+        server_url: &str,
+        explicit_identity_url: Option<&str>,
+        client_context: Option<&ClientContext>,
+        config_override: Option<&crate::config::Config>,
+    ) -> Self {
         let urls = EnvironmentUrls::resolve(server_url, explicit_identity_url);
-        let client = build_http_client_with_context(Duration::from_secs(30), client_context);
+        let (client, client_init_error) = match build_http_client_for_url_with_config(
+            Duration::from_secs(30),
+            client_context,
+            Some(server_url),
+            config_override,
+        ) {
+            Ok(c) => (c, None),
+            Err(e) => (Client::builder().build().unwrap_or_default(), Some(e)),
+        };
         Self {
             server_url: urls.base_url.clone(),
             urls,
             client,
+            client_init_error,
+        }
+    }
+
+    fn get_client(&self) -> Result<&Client, ApiError> {
+        if let Some(ref err) = self.client_init_error {
+            Err(err.clone())
+        } else {
+            Ok(&self.client)
         }
     }
 
     pub fn prelogin(&self, email: &str) -> Result<PreloginResponse, ApiError> {
+        let client = self.get_client()?;
         let primary_url = format!("{}/accounts/prelogin", self.urls.identity_url);
         let fallback_url = format!("{}/accounts/prelogin", self.urls.api_url);
 
         let email_payload = json!({ "email": email.trim().to_lowercase() });
-        let mut resp = self.client.post(&primary_url).json(&email_payload).send();
+        let mut resp = client.post(&primary_url).json(&email_payload).send();
 
         if let Ok(ref r) = resp {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(&fallback_url).json(&email_payload).send();
+                resp = client.post(&fallback_url).json(&email_payload).send();
             }
         }
 
@@ -626,6 +924,7 @@ impl BitwardenApiClient {
         &self,
         form_params: &HashMap<&str, String>,
     ) -> Result<reqwest::blocking::Response, ApiError> {
+        let client = self.get_client()?;
         let primary_url = format!("{}/connect/token", self.urls.identity_url);
         let fallback_url = if self.urls.is_cloud {
             None
@@ -633,10 +932,10 @@ impl BitwardenApiClient {
             Some(format!("{}/connect/token", self.urls.base_url))
         };
 
-        let mut resp = self.client.post(&primary_url).form(form_params).send();
+        let mut resp = client.post(&primary_url).form(form_params).send();
         if let (Some(ref fb_url), Ok(ref r)) = (fallback_url, &resp) {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(fb_url).form(form_params).send();
+                resp = client.post(fb_url).form(form_params).send();
             }
         }
 
@@ -917,10 +1216,11 @@ impl BitwardenApiClient {
         let primary_url = format!("{}/api/two-factor/send-email-login", self.urls.base_url);
         let fallback_url = format!("{}/two-factor/send-email-login", self.urls.base_url);
 
-        let mut resp = self.client.post(&primary_url).json(&payload).send();
+        let client = self.get_client()?;
+        let mut resp = client.post(&primary_url).json(&payload).send();
         if let Ok(ref r) = resp {
             if r.status() == reqwest::StatusCode::NOT_FOUND {
-                resp = self.client.post(&fallback_url).json(&payload).send();
+                resp = client.post(&fallback_url).json(&payload).send();
             }
         }
 
@@ -1027,9 +1327,9 @@ impl BitwardenApiClient {
     }
 
     pub fn sync_vault(&self, access_token: &str) -> Result<SyncResponse, ApiError> {
+        let client = self.get_client()?;
         let url = format!("{}/sync", self.urls.api_url);
-        let mut resp = self
-            .client
+        let mut resp = client
             .get(&url)
             .header("Authorization", format!("Bearer {}", access_token))
             .send()
@@ -1049,9 +1349,9 @@ impl BitwardenApiClient {
     }
 
     pub fn create_cipher(&self, access_token: &str, payload: &Value) -> Result<Value, ApiError> {
+        let client = self.get_client()?;
         let url = format!("{}/ciphers", self.urls.api_url);
-        let mut resp = self
-            .client
+        let mut resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", access_token))
             .json(payload)
@@ -3467,5 +3767,246 @@ mod tests {
         );
 
         let _ = handle.join();
+    }
+
+    const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDDTCCAfWgAwIBAgIUKd1YAPlr7WPqEf/C5Gclfb6ZbiYwDQYJKoZIhvcNAQEL
+BQAwFjEUMBIGA1UEAwwLdGVzdC1jbGllbnQwHhcNMjYxMDI1MDExNjI4WhcNMjcx
+MDI1MDExNjI4WjAWMRQwEgYDVQQDDAt0ZXN0LWNsaWVudDCCASIwDQYJKoZIhvcN
+AQEBBQADggEPADCCAQoCggEBAMNvAYv523yTZch694uH9yzFXaHoAW3tjmiCxEAK
+8XUvDWKS3cZRrwxowGp6J2MSSvsDCF7aTQ0Feeb1C4HkszpG4slL3WVUbnDoe9RL
+IcnfCDvhe088VTQMSLAmyEy47+kxKO1zlQoxDYIejWjcbk94kNJ2PxdplawK5isy
+Juu8LEMpdmjztGvi62mpa8gWy49E32/jH6j3p1uB21aC1T8tO9GOa05dmFLqRtEU
+K5mxXd/FavNJGMjHgYMvZvoLvj95vPS/4VFFe4NtBZdGxCwV7GwA3bdCcz52Tu4N
+mocFavQmMfne61d96G6P46t5w0uY887n+7KRlYxVimacoZ0CAwEAAaNTMFEwHQYD
+VR0OBBYEFIjn5AVlKlksM5e+CWIVYRA0bWHYMB8GA1UdIwQYMBaAFIjn5AVlKlks
+M5e+CWIVYRA0bWHYMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB
+ADMo0Dp0BHpIuJVHrV+9TAzaA6zLJo7nZeU088+ZQkYuMbnUkrq231WgYHcsuMPb
+w/7Dxl4/eCiqK7HiljYqqQ0zXAOT5KxnkpQFoZ1LHi58n3x6PKr/EQycF7zh1d+m
+BujDCiTF7Z7ANsn0NlQuGAjxHnOTC4sVnKhD/BvQZqTAiErFoZC8fghvDCu8a5gI
+ecQjCXd/SD159xsrCk7z4c8W2z3vWqE1Js03/UkBa4GgEi3AkBAwt/Xz2TvoL4Lz
+WXZ0kusm6H60UL99LcJAuevDm3NtCk0jvKDxGom3vYATKznB6aED2mRSg5lsyoKI
+eYvOsT7YxRgCmWt7SWLgz+A=
+-----END CERTIFICATE-----"#;
+
+    const TEST_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDDbwGL+dt8k2XI
+eveLh/csxV2h6AFt7Y5ogsRACvF1Lw1ikt3GUa8MaMBqeidjEkr7Awhe2k0NBXnm
+9QuB5LM6RuLJS91lVG5w6HvUSyHJ3wg74XtPPFU0DEiwJshMuO/pMSjtc5UKMQ2C
+Ho1o3G5PeJDSdj8XaZWsCuYrMibrvCxDKXZo87Rr4utpqWvIFsuPRN9v4x+o96db
+gdtWgtU/LTvRjmtOXZhS6kbRFCuZsV3fxWrzSRjIx4GDL2b6C74/ebz0v+FRRXuD
+bQWXRsQsFexsAN23QnM+dk7uDZqHBWr0JjH53utXfehuj+OrecNLmPPO5/uykZWM
+VYpmnKGdAgMBAAECggEANAcOS1xmASEgXKHX2u6EcAfO6HZiQwiV+96sLjx7kW3I
+S3C717sRNeWBLBd++tH44iApj07galIF5OVhfeALkr0iTOKEeyBiEm7h4F9sDFjy
+0TYy5KI0MJoAk9yPQFWPkO4Ebkpx5/etF/HYRY1BVKjNLSpLm4kBTn7MTb2ZPPIw
+oW/u1PfRWyLp9sDmLCzt9ufk/IdbyiD7/nE0Tn3x7uhJ1j03lOHApOspAOZ/RHmG
+dUmR/9VqLQihFp5KqaqC4gC4a3T+EIoJdXdMUEY9m3lwnWI5j6Ipy0mDISLwttTK
+kPQww2+XGNSPNLdUn8hAAppHNHCMW0NJMIILdN6opQKBgQD6SgBPys0TfMOP0gq/
+fLnwuco2CMSvvbpTALN32eSOvq/Oyj2Ev1bWvHfATAO3RjPe/gDZq7z+wQUPrHi9
+GkScHK1r6y1KuDfzsllRIhmheYhXix78szEQqg4mJsi2W8VGtjPix4tclzfukGLp
+FKyxk5sfqIibidkozuskIPIdnwKBgQDH5JS2+OiZ4ITVuHmFpQNn9hls3tS3Hq+7
+sMH+XWezQqtXbBMlAW1MU2jE4RJFecKuCzB39m3FvfFHdZ3cr/h8PD829fpkZMk+
+DFDDNdqpCHZ8JHBxV3ks+PxhQoz7Yo91QWIx+TL9inFv3TqPosaswYKUCHF4blWc
+Lkbn8FN/QwKBgGbZ0AT6DonKhEZuhtIne/VLM6g+tCyPp6iCKj2/AWgTPgWZH+yU
+AChf7EnOMty2cYxaDplkNFbvlJfbRQZYbAdG1ZD6ZHNG/l8bVA6+F5A+c+OdnM81
+B52UdBoDaAlf7tJe/zVa0I7s6SQUm0CyqUCTqnQ4+mIIJH/bf88p5rR7AoGBAJub
+3BFcT2aKm53sj910CeTCdiSEiz9Kii8oeLxVZkbsXYoevgCOzdEfFW4+cATZtq3a
+VA7vLaFELjIc45lK+7trAyL79cJ1mxvMZoqwv9nalrIpg8cX+2MBKSdlsW542YjE
+L3cLsaAiSBB3PgFXDCasNcSblgnUipycgeJI+hcVAoGBAL71D+Dfg1QJgMPO/PML
+p1haUeWINIpI/VakVbqN5T7VkkJtQFaPeGPtDHmvHHYgUEpcCLnwNWcYAnlEFQPw
+dkmT/1gHofouoz8GYm1PWfgRgzWmJj+fzaeoNpheNRneXZeKCW6JmcQHc/KC5Wmi
+ahSH5xq0hju1mYXz4VFLTIfJ
+-----END PRIVATE KEY-----"#;
+
+    const WEAK_1024_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAPyet2dCVv2py35G
+fnB8+uTSzzutOsHbr0DfwCwkK6J8f2qIvnCtx1T8f5sypoI/tSVtnEjVJempuYxV
+nf64hfQu2r4ssLTuu2IN0gQFw6zvWfJ0/0WluU0HlbfjWLFE3zmYbti3UR7mAazk
+ghrJkdXIEPl2Fzh9pOGeQI35MFuDAgMBAAECgYBb/4U1QrChgoOMQinr12gbizZT
+OlwKm3Gwg4vdx3Joo0RXzOLl8DOGnMnwADspdgAHWGqxD4bWGKxtEgUO7a5CLM+s
+HwXlu16YmBcYYdb7hCBFMMBc821tLiTrXHP7N0VbqQSf9AlK1TEgWAOnI15j3/p2
+Q4342o9yV1TmYmPUmQJBAP+RupuIrOBtO/DgUiyKPeBg/h1JD/Qs95P8X3guLzUS
+sWpkUlKpllQ97s4zSrAWfi166jDyFhyEjd5SKP+lhp0CQQD9C7cHXlyg3P/jehqy
+adOB33HDRGiwDZ6pbqkpJ2aqHroS26xz+roANjduGeC/CJo4QZ8Crv4ZFiYtSAOc
+XMCfAkEA83n+cdbP/C+U/3J2VwCM2osNDRFiJZoBc/bnbTNyvflFFLrmwuHV2gP2
+0nODICcNpn6HRoIcFqciET/s10D28QJBAN90Redi46dGIU2umP6uRxFr0Nkfgtbc
+4Bw81XK7EYTu52AZzrsIUNI5Dk/S2E25+f3trM5A27ApiAL6kf21Rn8CQHZq67a6
+MLC62jYKG2dIdS5jh3VtXQlyr7M6wIWLQCcezPkA8/AsmC3w8fsbz7Zj2qTzke+z
+7YmIRob1MJCNisA=
+-----END PRIVATE KEY-----"#;
+
+    #[test]
+    fn test_load_client_identity_missing_files_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent_cert = dir.path().join("missing.pem");
+        let res = load_client_identity_from_pem(&nonexistent_cert, None);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("not found"));
+
+        let cert = dir.path().join("cert.pem");
+        std::fs::write(&cert, TEST_CERT_PEM).unwrap();
+        let nonexistent_key = dir.path().join("missing.key");
+        let res2 = load_client_identity_from_pem(&cert, Some(&nonexistent_key));
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_load_client_identity_insecure_permissions_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let combined_file = dir.path().join("client.pem");
+        let combined_content = format!("{}\n{}", TEST_CERT_PEM, TEST_KEY_PEM);
+        std::fs::write(&combined_file, &combined_content).unwrap();
+
+        // Set permissions to 0644 (world readable)
+        std::fs::set_permissions(&combined_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let res = load_client_identity_from_pem(&combined_file, None);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Insecure permissions"));
+        assert!(err_msg.contains("0600 or 0400"));
+
+        // Tighten to 0600 -> must succeed
+        std::fs::set_permissions(&combined_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let res_ok = load_client_identity_from_pem(&combined_file, None);
+        assert!(res_ok.is_ok());
+    }
+
+    #[test]
+    fn test_load_client_identity_weak_rsa_key_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let combined_file = dir.path().join("weak_client.pem");
+        let combined_content = format!("{}\n{}", TEST_CERT_PEM, WEAK_1024_KEY_PEM);
+        std::fs::write(&combined_file, &combined_content).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&combined_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let res = load_client_identity_from_pem(&combined_file, None);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("1024 bits") && err_msg.contains("2048 bits"),
+            "Expected error about weak RSA key length, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_client_identity_valid_split_files_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cert_file = dir.path().join("client.crt");
+        let key_file = dir.path().join("client.key");
+
+        std::fs::write(&cert_file, TEST_CERT_PEM).unwrap();
+        std::fs::write(&key_file, TEST_KEY_PEM).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let res = load_client_identity_from_pem(&cert_file, Some(&key_file));
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_build_http_client_for_url_origin_gating() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_dir = dir.path().join("omawarden");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+
+        let cert_file = cfg_dir.join("client.crt");
+        let key_file = cfg_dir.join("client.key");
+        std::fs::write(&cert_file, TEST_CERT_PEM).unwrap();
+        std::fs::write(&key_file, TEST_KEY_PEM).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let test_cfg = crate::config::Config {
+            server_url: "https://vault.mycorp.internal:8443".to_string(),
+            client_cert_path: Some(cert_file.to_str().unwrap().to_string()),
+            client_key_path: Some(key_file.to_str().unwrap().to_string()),
+            client_cert_server: Some("https://vault.mycorp.internal:8443".to_string()),
+            ..Default::default()
+        };
+
+        // Target matching origin: client should successfully build with identity
+        let client_matching = build_http_client_for_url_with_config(
+            Duration::from_secs(5),
+            None,
+            Some("https://vault.mycorp.internal:8443/api/sync"),
+            Some(&test_cfg),
+        )
+        .unwrap();
+        // Verify client can attempt requests
+        assert!(client_matching.get("http://localhost").build().is_ok());
+
+        // Target foreign origin (e.g. public cloud): client builds without identity
+        let client_foreign = build_http_client_for_url_with_config(
+            Duration::from_secs(5),
+            None,
+            Some("https://vault.bitwarden.com/api/sync"),
+            Some(&test_cfg),
+        )
+        .unwrap();
+        assert!(client_foreign.get("http://localhost").build().is_ok());
+
+        // Target matching origin with insecure key permissions (0644) must fail closed
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let client_insecure = build_http_client_for_url_with_config(
+                Duration::from_secs(5),
+                None,
+                Some("https://vault.mycorp.internal:8443/api/sync"),
+                Some(&test_cfg),
+            );
+            assert!(client_insecure.is_err());
+            let err_msg = client_insecure.unwrap_err().to_string();
+            assert!(err_msg.contains("Insecure permissions"));
+
+            // BitwardenApiClient with insecure key must fail closed on calls
+            let api_client = BitwardenApiClient::with_options_and_config(
+                "https://vault.mycorp.internal:8443",
+                None,
+                None,
+                Some(&test_cfg),
+            );
+            let sync_res = api_client.sync_vault("dummy-token");
+            assert!(sync_res.is_err());
+        }
+    }
+
+    #[test]
+    fn test_validate_client_key_strength_rejections() {
+        // Non-UTF-8 bytes
+        let non_utf8 = [0xff, 0xfe, 0xfd];
+        let res_utf8 = validate_client_key_strength(&non_utf8);
+        assert!(res_utf8.is_err());
+        assert!(res_utf8
+            .unwrap_err()
+            .to_string()
+            .contains("not valid UTF-8"));
+
+        // Encrypted private keys
+        let encrypted_pem = b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIB...==\n-----END ENCRYPTED PRIVATE KEY-----";
+        let res_enc = validate_client_key_strength(encrypted_pem);
+        assert!(res_enc.is_err());
+        assert!(res_enc
+            .unwrap_err()
+            .to_string()
+            .contains("Encrypted private keys are not supported"));
+
+        // Unknown / empty PEM
+        let empty_pem = b"-----BEGIN CERTIFICATE-----\nMIIB...==\n-----END CERTIFICATE-----";
+        let res_empty = validate_client_key_strength(empty_pem);
+        assert!(res_empty.is_err());
+        assert!(res_empty
+            .unwrap_err()
+            .to_string()
+            .contains("No recognized private key found"));
     }
 }

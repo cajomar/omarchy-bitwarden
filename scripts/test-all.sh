@@ -34,7 +34,15 @@ STANDALONE_TESTS=(
   "tests/tst_lock_cleanup.qml"
   "tests/tst_scope_filtering.qml"
   "tests/tst_sync_error_formatting.qml"
+  "tests/tst_mtls_ui_gating.qml"
+  "tests/tst_settings_ssh_agent.qml"
+  "tests/tst_ssh_approval_modal.qml"
 )
+
+# The components import qs.Commons from Quickshell; use the stub, and run
+# without a display unless the caller has one configured.
+export QML_IMPORT_PATH="${ROOT_DIR}/tests/stubs${QML_IMPORT_PATH:+:${QML_IMPORT_PATH}}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 
 for test_file in "${STANDALONE_TESTS[@]}"; do
   if [ -f "$test_file" ]; then
