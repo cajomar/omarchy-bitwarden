@@ -55,10 +55,34 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
     let env_urls = crate::api::EnvironmentUrls::resolve(server_url, None);
     let prelogin_url = format!("{}/accounts/prelogin", env_urls.identity_url);
     let legacy_prelogin_url = format!("{}/accounts/prelogin", env_urls.api_url);
-    let server_reachable = client.get(&prelogin_url).send().is_ok()
-        || client.get(&legacy_prelogin_url).send().is_ok()
-        || client.get(&env_urls.base_url).send().is_ok()
-        || client.get(server_clean).send().is_ok();
+
+    let format_req_error = |mut err: &dyn std::error::Error| -> String {
+        let mut s = err.to_string();
+        while let Some(src) = err.source() {
+            s.push_str(" -> ");
+            s.push_str(&src.to_string());
+            err = src;
+        }
+        s
+    };
+
+    let reachability_err = match client.get(&prelogin_url).send() {
+        Ok(_) => None,
+        Err(e) => match client.get(&legacy_prelogin_url).send() {
+            Ok(_) => None,
+            Err(_) => match client.get(&env_urls.base_url).send() {
+                Ok(_) => None,
+                Err(_) => match client.get(server_clean).send() {
+                    Ok(_) => None,
+                    Err(_) => Some(format!(
+                        "Cannot reach Bitwarden server: {}",
+                        format_req_error(&e)
+                    )),
+                },
+            },
+        },
+    };
+    let server_reachable = reachability_err.is_none();
 
     // 2. Check Keyring (secret-tool)
     let keyring_available = which::which("secret-tool").is_ok();
@@ -86,11 +110,8 @@ pub fn check_system_health(server_url: &str) -> HealthStatus {
         server_reachable,
         keyring_available,
         clipboard_available,
-        error: if !server_reachable {
-            Some(
-                "Cannot reach Bitwarden server. Please check your network or server URL."
-                    .to_string(),
-            )
+        error: if let Some(err) = reachability_err {
+            Some(err)
         } else if !keyring_available {
             Some("Linux Secret Service (secret-tool) is not available.".to_string())
         } else if !clipboard_available {
