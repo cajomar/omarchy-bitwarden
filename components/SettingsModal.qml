@@ -54,6 +54,7 @@ Item {
   property string selectedLogLevel: (config && config.log_level) ? config.log_level.toLowerCase() : "error"
   property bool showWebsiteIconsChecked: true
   property bool rememberLastSearchChecked: false
+  property bool enableMtlsChecked: false
 
   readonly property string curServerUrl: (sUrlInput && sUrlInput.text.trim()) ? sUrlInput.text.trim() : ((config && config.server_url) ? config.server_url : "")
   readonly property bool isOfficialServer: IconPolicy.isOfficialServer(curServerUrl)
@@ -64,6 +65,7 @@ Item {
   }
 
   onCertMatchesServerChanged: {
+    enableMtlsChecked = Boolean(config && config.client_cert_path && settingsRoot.certMatchesServer)
     if (clientCertInput) {
       clientCertInput.text = settingsRoot.certMatchesServer ? ((config && config.client_cert_path) || "") : ""
     }
@@ -76,6 +78,7 @@ Item {
     if (config) checkUpdatesChecked = (config.check_updates !== false)
     if (config) showWebsiteIconsChecked = (config.show_website_icons !== false)
     if (config) rememberLastSearchChecked = (config.remember_last_search === true)
+    if (config) enableMtlsChecked = Boolean(config.client_cert_path && settingsRoot.certMatchesServer)
     if (sUrlInput && config && config.server_url) {
       sUrlInput.text = config.server_url
     }
@@ -89,8 +92,9 @@ Item {
 
   function buildPayload() {
     var isOfficial = settingsRoot.isOfficialServer
-    var certPath = isOfficial ? "" : (clientCertInput.visible ? clientCertInput.text.trim() : "")
-    var keyPath = isOfficial ? "" : (clientKeyInput.visible ? clientKeyInput.text.trim() : "")
+    var useMtls = !isOfficial && settingsRoot.enableMtlsChecked
+    var certPath = useMtls ? (clientCertInput.visible ? clientCertInput.text.trim() : "") : ""
+    var keyPath = useMtls ? (clientKeyInput.visible ? clientKeyInput.text.trim() : "") : ""
 
     return {
       server_url: sUrlInput.text.trim() || "https://vault.bitwarden.com",
@@ -557,7 +561,7 @@ Item {
                 id: idUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
-                KeyNavigation.tab: settingsRoot.isOfficialServer ? dlDirInput : clientCertInput
+                KeyNavigation.tab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientCertInput : dlDirInput
                 KeyNavigation.backtab: sUrlInput
                 text: (settingsRoot.config && settingsRoot.config.identity_url) ? settingsRoot.config.identity_url : ""
               }
@@ -571,9 +575,43 @@ Item {
             }
           }
 
+          // Optional mTLS Toggle for Self-Hosted Servers
+          RowLayout {
+            visible: !settingsRoot.isOfficialServer
+            spacing: 6
+            Rectangle {
+              width: 14; height: 14; radius: 3
+              color: settingsRoot.enableMtlsChecked ? settingsRoot.accent : Qt.rgba(0, 0, 0, 0.2)
+              border.color: settingsRoot.borderColor; border.width: 1
+              Text {
+                anchors.centerIn: parent
+                visible: settingsRoot.enableMtlsChecked
+                text: "\uf00c"
+                font.family: settingsRoot.fontFamily
+                color: "#ffffff"
+                font.pixelSize: Style.fontPx(0.75)
+              }
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: settingsRoot.enableMtlsChecked = !settingsRoot.enableMtlsChecked
+              }
+            }
+            Text {
+              text: "Use mTLS Client Certificate (for edge gateways)"
+              color: settingsRoot.foreground
+              font.pixelSize: Style.font.bodySmall
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: settingsRoot.enableMtlsChecked = !settingsRoot.enableMtlsChecked
+              }
+            }
+          }
+
           // mTLS Client Certificate Path (Self-Hosted Only)
           ColumnLayout {
-            visible: !settingsRoot.isOfficialServer
+            visible: !settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked
             Layout.fillWidth: true
             spacing: 3
             RowLayout {
@@ -603,7 +641,7 @@ Item {
 
           // mTLS Client Private Key Path (Self-Hosted Only)
           ColumnLayout {
-            visible: !settingsRoot.isOfficialServer
+            visible: !settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked
             Layout.fillWidth: true
             spacing: 3
             RowLayout {
@@ -643,7 +681,7 @@ Item {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: lockMinInput
-                KeyNavigation.backtab: settingsRoot.isOfficialServer ? idUrlInput : clientKeyInput
+                KeyNavigation.backtab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientKeyInput : idUrlInput
                 text: (settingsRoot.config && settingsRoot.config.download_dir) ? settingsRoot.config.download_dir : "~/Downloads"
               }
             }

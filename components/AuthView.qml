@@ -23,6 +23,7 @@ Item {
   property bool isSendingEmail: false
   property bool isInstalling: false
   property bool showServerConfig: false
+  property bool enableMtlsChecked: false
   property color foreground: "#ffffff"
   property color accent: "#3b82f6"
   property color borderColor: Qt.rgba(1, 1, 1, 0.1)
@@ -37,6 +38,7 @@ Item {
   }
 
   onCertMatchesServerChanged: {
+    authRoot.enableMtlsChecked = Boolean(config && config.client_cert_path && authRoot.certMatchesServer)
     if (authClientCertInput) {
       authClientCertInput.text = authRoot.certMatchesServer ? ((config && config.client_cert_path) || "") : ""
     }
@@ -162,6 +164,9 @@ Item {
     }
     if (authServerUrlInput && authRoot.config && authRoot.config.server_url) {
       authServerUrlInput.text = authRoot.config.server_url
+    }
+    if (authRoot.config) {
+      authRoot.enableMtlsChecked = Boolean(authRoot.config.client_cert_path && authRoot.certMatchesServer)
     }
     if (authClientCertInput) {
       authClientCertInput.text = authRoot.certMatchesServer ? ((authRoot.config && authRoot.config.client_cert_path) || "") : ""
@@ -424,7 +429,7 @@ Item {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                     color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                     activeFocusOnTab: true
-                    KeyNavigation.tab: (!authRoot.isOfficialServer && authClientCertInput) ? authClientCertInput : ((authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput)
+                    KeyNavigation.tab: (!authRoot.isOfficialServer && authRoot.enableMtlsChecked && authClientCertInput) ? authClientCertInput : ((authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput)
                     KeyNavigation.backtab: (authRoot.loginMethod === "password") ? (authRoot.show2FAField ? login2FAInput : loginPwdInput) : apiClientSecInput
                     text: (authRoot.config && authRoot.config.server_url) ? authRoot.config.server_url : "https://vault.bitwarden.com"
                   }
@@ -441,10 +446,44 @@ Item {
                 wrapMode: Text.WordWrap
               }
 
-              // Certificate Section (Self-Hosted Only)
+              // Optional mTLS Toggle for Self-Hosted Servers
+              RowLayout {
+                visible: !authRoot.isOfficialServer
+                spacing: 6
+                Rectangle {
+                  width: 14; height: 14; radius: 3
+                  color: authRoot.enableMtlsChecked ? authRoot.accent : Qt.rgba(0, 0, 0, 0.2)
+                  border.color: authRoot.borderColor; border.width: 1
+                  Text {
+                    anchors.centerIn: parent
+                    visible: authRoot.enableMtlsChecked
+                    text: "\uf00c"
+                    font.family: authRoot.fontFamily
+                    color: "#ffffff"
+                    font.pixelSize: Style.fontPx(0.75)
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: authRoot.enableMtlsChecked = !authRoot.enableMtlsChecked
+                  }
+                }
+                Text {
+                  text: "Use mTLS Client Certificate (for edge gateways)"
+                  color: authRoot.foreground
+                  font.pixelSize: Style.font.bodySmall
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: authRoot.enableMtlsChecked = !authRoot.enableMtlsChecked
+                  }
+                }
+              }
+
+              // Certificate Section (Self-Hosted Only when mTLS is enabled)
               ColumnLayout {
                 id: authCertFields
-                visible: !authRoot.isOfficialServer
+                visible: !authRoot.isOfficialServer && authRoot.enableMtlsChecked
                 Layout.fillWidth: true
                 spacing: 8
 
@@ -533,10 +572,11 @@ Item {
                     onClicked: {
                       var targetServer = authServerUrlInput.text.trim() || "https://vault.bitwarden.com"
                       var isOfficial = IconPolicy.isOfficialServer(targetServer)
+                      var useMtls = !isOfficial && authRoot.enableMtlsChecked
                       authRoot.serverConfigSaved(
                         targetServer,
-                        isOfficial ? "" : (authClientCertInput ? authClientCertInput.text.trim() : ""),
-                        isOfficial ? "" : (authClientKeyInput ? authClientKeyInput.text.trim() : "")
+                        useMtls ? (authClientCertInput ? authClientCertInput.text.trim() : "") : "",
+                        useMtls ? (authClientKeyInput ? authClientKeyInput.text.trim() : "") : ""
                       )
                       authRoot.showServerConfig = false
                     }
@@ -562,6 +602,7 @@ Item {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                       authServerUrlInput.text = "https://vault.bitwarden.com"
+                      authRoot.enableMtlsChecked = false
                       if (authClientCertInput) authClientCertInput.text = ""
                       if (authClientKeyInput) authClientKeyInput.text = ""
                       authRoot.serverConfigSaved(
@@ -626,7 +667,7 @@ Item {
                   activeFocusOnTab: true
                   KeyNavigation.tab: loginPwdInput
                   KeyNavigation.backtab: authRoot.showServerConfig
-                    ? (!authRoot.isOfficialServer ? authClientKeyInput : authServerUrlInput)
+                    ? (!authRoot.isOfficialServer && authRoot.enableMtlsChecked ? authClientKeyInput : authServerUrlInput)
                     : (authRoot.show2FAField ? login2FAInput : loginPwdInput)
                   text: (authRoot.config && authRoot.config.email) ? authRoot.config.email : ""
                   onAccepted: loginPwdInput.forceActiveFocus()
@@ -1089,7 +1130,7 @@ Item {
                   activeFocusOnTab: true
                   KeyNavigation.tab: apiClientSecInput
                   KeyNavigation.backtab: authRoot.showServerConfig
-                    ? (!authRoot.isOfficialServer ? authClientKeyInput : authServerUrlInput)
+                    ? (!authRoot.isOfficialServer && authRoot.enableMtlsChecked ? authClientKeyInput : authServerUrlInput)
                     : apiClientSecInput
                   onAccepted: apiClientSecInput.forceActiveFocus()
                 }
