@@ -745,6 +745,24 @@ impl VaultManager {
             .unwrap_or_default()
     }
 
+    /// Name and SSH data of the unlocked vault's SSH key items, without
+    /// copying the rest of the vault. Empty while locked, and never asks the
+    /// daemon: the SSH agent runs inside it.
+    pub fn ssh_key_items(&self) -> Vec<(String, SshMetadata)> {
+        if !self.is_unlocked() {
+            return Vec::new();
+        }
+        self.decrypted_items
+            .read()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| Some((i.name.clone(), i.ssh_key.clone()?)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn search_items(&self, query: &str, category: Option<&str>) -> Vec<VaultItem> {
         let is_unlocked = self.is_unlocked();
         if !is_unlocked {

@@ -132,16 +132,15 @@ fn check_running_daemon(ping: &Value, our_commit: &str) -> DaemonCheck {
 
 pub fn ensure_daemon_running() {
     if let Some(resp) = send_daemon_request(&json!({ "action": "ping" })) {
-        match check_running_daemon(&resp, env!("GIT_HASH")) {
-            DaemonCheck::UpToDate => return,
-            DaemonCheck::Defer => {
-                crate::log_info!(
-                    "omawarden:daemon",
-                    "Running daemon is from another build but the vault is unlocked; keeping it until it locks"
-                );
-                return;
-            }
-            DaemonCheck::Replace => {}
+        let check = check_running_daemon(&resp, env!("GIT_HASH"));
+        if check == DaemonCheck::Defer {
+            crate::log_info!(
+                "omawarden:daemon",
+                "Running daemon is from another build but the vault is unlocked; keeping it until it locks"
+            );
+        }
+        if check != DaemonCheck::Replace {
+            return;
         }
         // Outdated daemon running: gracefully stop it so we can spawn the latest binary version
         let _ = send_daemon_request(&json!({ "action": "stop" }));
@@ -1149,6 +1148,149 @@ mod tests {
         let search_res = send_req(json!({ "action": "search", "query": "test" }));
         assert!(search_res.is_array());
         assert!(*state.last_activity.lock().unwrap() > past);
+    }
+
+    #[test]
+    fn test_ssh_agent_ipc_actions() {
+        let _lock = crate::env_lock();
+        let dir = tempdir().unwrap();
+        let runtime = tempdir().unwrap();
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        let old_config = std::env::var_os("OMAWARDEN_CONFIG_DIR");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+        std::env::set_var("OMAWARDEN_CONFIG_DIR", dir.path());
+
+        let state = Arc::new(DaemonState::new(
+            StorageManager::new(dir.path().join("daemon_data.json")),
+            15,
+        ));
+        let send_req = |req: Value| -> Value {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let st = state.clone();
+            let handle = std::thread::spawn(move || {
+                let _ = handle_client(server, st);
+            });
+            client.write_all(format!("{}\n", req).as_bytes()).unwrap();
+            client.flush().unwrap();
+            let mut line = String::new();
+            BufReader::new(client).read_line(&mut line).unwrap();
+            handle.join().unwrap();
+            serde_json::from_str(&line).unwrap()
+        };
+
+        // Disabled by default: applying starts nothing.
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["running"], false);
+        let res = send_req(json!({ "action": "ssh_agent_status" }));
+        assert_eq!(res["running"], false);
+        assert_eq!(
+            res["socket"],
+            json!(runtime.path().join("omawarden-ssh-agent.sock"))
+        );
+
+        // Enabled: applying binds the socket.
+        let mut cfg = crate::config::ConfigManager::default().load();
+        cfg.ssh_agent_enabled = true;
+        fs::write(
+            dir.path().join(crate::config::DEFAULT_CONFIG_FILENAME),
+            serde_json::to_string(&cfg).unwrap(),
+        )
+        .unwrap();
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(
+            (res["ok"].clone(), res["running"].clone()),
+            (json!(true), json!(true))
+        );
+        assert_eq!(
+            send_req(json!({ "action": "ssh_agent_status" }))["running"],
+            true
+        );
+
+        // Nothing is waiting for an answer.
+        let res = send_req(json!({ "action": "ssh_agent_pending" }));
+        assert_eq!(res["prompts"], json!([]));
+        let res = send_req(json!({ "action": "ssh_agent_reply", "id": 42, "approve": true }));
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["delivered"], false);
+        let res = send_req(json!({ "action": "ssh_agent_reply" }));
+        assert_eq!(
+            res["delivered"], false,
+            "missing id and approve are tolerated"
+        );
+
+        // Disabled again: applying stops it and removes the socket.
+        let write_enabled = |on: bool| {
+            let mut cfg = crate::config::ConfigManager::default().load();
+            cfg.ssh_agent_enabled = on;
+            fs::write(
+                dir.path().join(crate::config::DEFAULT_CONFIG_FILENAME),
+                serde_json::to_string(&cfg).unwrap(),
+            )
+            .unwrap();
+        };
+        write_enabled(false);
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["running"], false);
+        assert!(!crate::ssh_agent::socket_path().exists());
+
+        // A path that can't be bound is reported.
+        std::os::unix::fs::symlink("/tmp/elsewhere", crate::ssh_agent::socket_path()).unwrap();
+        write_enabled(true);
+        let res = send_req(json!({ "action": "ssh_agent_apply" }));
+        assert_eq!(res["ok"], false);
+        assert!(res["error"].as_str().unwrap().starts_with("SSH agent: "));
+
+        for (k, v) in [
+            ("XDG_RUNTIME_DIR", old_runtime),
+            ("OMAWARDEN_CONFIG_DIR", old_config),
+        ] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    #[test]
+    fn test_ensure_daemon_running_keeps_a_running_daemon_it_should_not_replace() {
+        let _lock = crate::env_lock();
+        let runtime = tempdir().unwrap();
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::set_var("XDG_RUNTIME_DIR", runtime.path());
+
+        // A daemon that answers every ping the same way; if it were replaced,
+        // a second daemon would be spawned and the connection count would
+        // show it.
+        let listener = std::os::unix::net::UnixListener::bind(get_socket_path()).unwrap();
+        for reply in [
+            json!({ "ok": true, "commit": env!("GIT_HASH"), "unlocked": false }),
+            json!({ "ok": true, "commit": "another-build", "unlocked": true }),
+        ] {
+            let server = {
+                let listener = listener.try_clone().unwrap();
+                let reply = reply.clone();
+                std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    BufReader::new(stream.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&line).unwrap()["action"],
+                        "ping"
+                    );
+                    writeln!(stream, "{reply}").unwrap();
+                })
+            };
+            ensure_daemon_running();
+            server.join().unwrap();
+        }
+
+        old_runtime.map_or_else(
+            || std::env::remove_var("XDG_RUNTIME_DIR"),
+            |v| std::env::set_var("XDG_RUNTIME_DIR", v),
+        );
     }
 
     #[test]

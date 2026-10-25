@@ -13,6 +13,17 @@ Item {
     onReplyRequested: function(approve) { replies.push(approve) }
   }
 
+  // The Text item under `item` showing exactly `text`, if any.
+  function findText(item, text) {
+    var kids = item.children
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i].text === text) return kids[i]
+      var found = findText(kids[i], text)
+      if (found) return found
+    }
+    return null
+  }
+
   Component.onCompleted: {
     // Hidden until the overlay is open and a prompt exists
     check(modal.visible === false, "hidden with no prompt")
@@ -32,10 +43,20 @@ Item {
                       client: "ssh", command: "ssh vps", forwarded: true, remembered: false })
     check(modal.visible === true, "forwarded prompt visible")
 
-    // The reply signal carries approve/deny
-    modal.replyRequested(true)
-    modal.replyRequested(false)
-    check(replies.length === 2 && replies[0] === true && replies[1] === false, "replyRequested carries the decision")
+    // Text from the request (user names, namespaces, commands) can come from a
+    // forwarding host, so it must never be read as rich text.
+    var fields = [modal.prompt.title, modal.prompt.action, modal.prompt.key_name,
+                  modal.prompt.fingerprint, modal.prompt.client, modal.prompt.command]
+    for (var i = 0; i < fields.length; i++) {
+      var t = findText(modal, fields[i])
+      check(t !== null, "a Text shows " + fields[i])
+      if (t) check(t.textFormat === Text.PlainText, "plain text for " + fields[i])
+    }
+    modal.prompt = ({ id: 2, title: "<b>Log in</b>", action: "root<font size=7>@x</font>", key_name: "<i>k</i>", fingerprint: "SHA256:abc",
+                      client: "ssh", command: "ssh <u>vps</u>", forwarded: true, remembered: false })
+    var markup = findText(modal, "root<font size=7>@x</font>")
+    check(markup !== null && markup.textFormat === Text.PlainText && markup.text === "root<font size=7>@x</font>",
+          "markup in the action is shown literally")
 
     // The card opens by itself: Allow is ignored until it has been up briefly
     replies = []

@@ -105,6 +105,7 @@ Rectangle {
 
         Text {
           text: approvalRoot.prompt ? approvalRoot.prompt.title : ""
+          textFormat: Text.PlainText
           color: approvalRoot.foreground
           font.pixelSize: Style.font.subtitle
           font.weight: Font.DemiBold
@@ -153,6 +154,7 @@ Rectangle {
       Text {
         Layout.fillWidth: true
         text: approvalRoot.prompt ? approvalRoot.prompt.action : ""
+        textFormat: Text.PlainText
         color: approvalRoot.foreground
         font.pixelSize: Style.font.body
         font.weight: Font.Medium
@@ -170,6 +172,7 @@ Rectangle {
         Text {
           Layout.fillWidth: true
           text: approvalRoot.prompt ? approvalRoot.prompt.key_name : ""
+          textFormat: Text.PlainText
           color: approvalRoot.foreground
           font.pixelSize: Style.font.bodySmall
           elide: Text.ElideRight
@@ -179,6 +182,7 @@ Rectangle {
         Text {
           Layout.fillWidth: true
           text: approvalRoot.prompt ? approvalRoot.prompt.fingerprint : ""
+          textFormat: Text.PlainText
           color: approvalRoot.mutedForeground
           font.pixelSize: Style.font.caption
           font.family: "monospace"
@@ -189,6 +193,7 @@ Rectangle {
         Text {
           Layout.fillWidth: true
           text: approvalRoot.prompt ? approvalRoot.prompt.client : ""
+          textFormat: Text.PlainText
           color: approvalRoot.foreground
           font.pixelSize: Style.font.bodySmall
           elide: Text.ElideRight
@@ -198,6 +203,7 @@ Rectangle {
         Text {
           Layout.fillWidth: true
           text: approvalRoot.prompt ? approvalRoot.prompt.command : ""
+          textFormat: Text.PlainText
           color: approvalRoot.mutedForeground
           font.pixelSize: Style.font.caption
           font.family: "monospace"
