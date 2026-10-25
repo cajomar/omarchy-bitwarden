@@ -368,21 +368,21 @@ Item {
               Text {
                 text: "SERVER & mTLS CLIENT CERTIFICATE"
                 color: authRoot.accent
-                font.pixelSize: Style.font.caption
+                font.pixelSize: Style.font.bodySmall
                 font.weight: Font.DemiBold
               }
 
               // Server URL Field
               ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 2
-                Text { text: "Server URL:"; color: authRoot.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Medium }
+                spacing: 3
+                Text { text: "Server URL:"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
                 Rectangle {
-                  Layout.fillWidth: true; height: 28; radius: 4; color: Qt.rgba(0, 0, 0, 0.25); border.color: authServerUrlInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                  Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authServerUrlInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
                   TextInput {
                     id: authServerUrlInput
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 8; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
-                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.caption; selectByMouse: true
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                     text: (authRoot.config && authRoot.config.server_url) ? authRoot.config.server_url : "https://vault.bitwarden.com"
                   }
                 }
@@ -391,21 +391,21 @@ Item {
               // Client Certificate (.pem / .crt)
               ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 2
-                Text { text: "Client Certificate Path (.pem / .crt):"; color: authRoot.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Medium }
+                spacing: 3
+                Text { text: "Client Certificate Path (.pem / .crt):"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
                 Rectangle {
-                  Layout.fillWidth: true; height: 28; radius: 4; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientCertInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                  Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientCertInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
                   TextInput {
                     id: authClientCertInput
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 8; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
-                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.caption; selectByMouse: true
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                     text: (authRoot.config && authRoot.config.client_cert_path) ? authRoot.config.client_cert_path : ""
                   }
                   Text {
-                    anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
                     text: "e.g. /home/user/.certs/client.crt"
                     color: Qt.darker(authRoot.foreground, 2.0)
-                    font.family: "sans-serif"; font.pixelSize: Style.font.caption
+                    font.family: "sans-serif"; font.pixelSize: Style.font.body
                     visible: authClientCertInput.text.length === 0
                   }
                 }
@@ -414,21 +414,21 @@ Item {
               // Client Private Key (.key)
               ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 2
-                Text { text: "Client Private Key Path (optional if merged):"; color: authRoot.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Medium }
+                spacing: 3
+                Text { text: "Client Private Key Path (optional if merged):"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
                 Rectangle {
-                  Layout.fillWidth: true; height: 28; radius: 4; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientKeyInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                  Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientKeyInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
                   TextInput {
                     id: authClientKeyInput
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 8; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
-                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.caption; selectByMouse: true
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                     text: (authRoot.config && authRoot.config.client_key_path) ? authRoot.config.client_key_path : ""
                   }
                   Text {
-                    anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
                     text: "e.g. /home/user/.certs/client.key (0600 mode)"
                     color: Qt.darker(authRoot.foreground, 2.0)
-                    font.family: "sans-serif"; font.pixelSize: Style.font.caption
+                    font.family: "sans-serif"; font.pixelSize: Style.font.body
                     visible: authClientKeyInput.text.length === 0
                   }
                 }
@@ -438,7 +438,7 @@ Item {
                 Layout.fillWidth: true
                 text: "Private key files must be restricted to 0600 or 0400 file permissions."
                 color: Qt.darker(authRoot.foreground, 1.8)
-                font.pixelSize: Style.fontPx(0.7)
+                font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
 
@@ -448,16 +448,16 @@ Item {
                 spacing: 8
 
                 Rectangle {
-                  implicitHeight: 24
-                  implicitWidth: saveServerTxt.implicitWidth + 14
-                  radius: 3
+                  implicitHeight: 28
+                  implicitWidth: saveServerTxt.implicitWidth + 16
+                  radius: 4
                   color: authRoot.accent
                   Text {
                     id: saveServerTxt
                     anchors.centerIn: parent
                     text: "Save & Apply"
                     color: "#ffffff"
-                    font.pixelSize: Style.font.caption
+                    font.pixelSize: Style.font.bodySmall
                     font.weight: Font.Medium
                   }
                   MouseArea {
@@ -475,9 +475,9 @@ Item {
                 }
 
                 Rectangle {
-                  implicitHeight: 24
-                  implicitWidth: resetServerTxt.implicitWidth + 12
-                  radius: 3
+                  implicitHeight: 28
+                  implicitWidth: resetServerTxt.implicitWidth + 14
+                  radius: 4
                   color: "transparent"
                   border.color: authRoot.borderColor
                   border.width: 1
@@ -486,7 +486,7 @@ Item {
                     anchors.centerIn: parent
                     text: "Reset to Official"
                     color: Qt.darker(authRoot.foreground, 1.3)
-                    font.pixelSize: Style.font.caption
+                    font.pixelSize: Style.font.bodySmall
                   }
                   MouseArea {
                     anchors.fill: parent
