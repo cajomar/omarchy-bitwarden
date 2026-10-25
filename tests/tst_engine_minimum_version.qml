@@ -91,6 +91,8 @@ Item {
     check(isEngineVersionSatisfied("0.8.2-dev"), "Development build 0.8.2-dev is accepted (> 0.8.1)")
     check(isEngineVersionSatisfied("0.9.0"), "Version 0.9.0 is accepted (> 0.8.1)")
     check(isEngineVersionSatisfied("0.9.0-dev"), "Development build 0.9.0-dev is accepted (> 0.8.1)")
+    check(isEngineVersionSatisfied("0.10.0"), "Version 0.10.0 is accepted (> 0.8.1)")
+    check(isEngineVersionSatisfied("0.10.0-dev"), "Development build 0.10.0-dev is accepted (> 0.8.1)")
     check(isEngineVersionSatisfied("1.0.0-rc1"), "Prerelease 1.0.0-rc1 is accepted (> 0.8.1)")
     check(isEngineVersionSatisfied("omawarden 0.8.1 (32cf259 2026-09-19)"), "Full omawarden CLI version string is accepted (>= 0.8.1)")
 

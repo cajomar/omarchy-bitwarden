@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
+import "IconPolicy.js" as IconPolicy
 
 Item {
   id: authRoot
@@ -21,16 +22,37 @@ Item {
   property int emailSentCount: 0
   property bool isSendingEmail: false
   property bool isInstalling: false
+  property bool showServerConfig: false
+  property bool enableMtlsChecked: false
   property color foreground: "#ffffff"
   property color accent: "#3b82f6"
   property color borderColor: Qt.rgba(1, 1, 1, 0.1)
   property string fontFamily: ""
+
+  readonly property string curServerUrl: (authServerUrlInput && authServerUrlInput.text.trim()) ? authServerUrlInput.text.trim() : ((config && config.server_url) ? config.server_url : "")
+  readonly property bool isOfficialServer: IconPolicy.isOfficialServer(curServerUrl)
+  readonly property bool certMatchesServer: {
+    if (!config || !config.client_cert_server || !config.client_cert_path) return false
+    if (isOfficialServer) return false
+    return IconPolicy.isSameOrigin(curServerUrl, config.client_cert_server)
+  }
+
+  onCertMatchesServerChanged: {
+    authRoot.enableMtlsChecked = Boolean(config && config.client_cert_path && authRoot.certMatchesServer)
+    if (authClientCertInput) {
+      authClientCertInput.text = authRoot.certMatchesServer ? ((config && config.client_cert_path) || "") : ""
+    }
+    if (authClientKeyInput) {
+      authClientKeyInput.text = authRoot.certMatchesServer ? ((config && config.client_key_path) || "") : ""
+    }
+  }
 
   signal unlockRequested(string password)
   signal loginPasswordRequested(string email, string password, string code, var provider)
   signal loginApiKeyRequested(string clientId, string clientSecret)
   signal logoutRequested()
   signal settingsRequested()
+  signal serverConfigSaved(string serverUrl, string clientCert, string clientKey)
   signal twoFactorProviderSelected(int provider)
   signal sendTwoFactorEmailRequested(string email, string password)
   signal checkFido2StatusRequested()
@@ -139,6 +161,18 @@ Item {
       if (!loginEmailInput.text || loginEmailInput.text.trim() === "") {
         loginEmailInput.text = authRoot.config.email
       }
+    }
+    if (authServerUrlInput && authRoot.config && authRoot.config.server_url) {
+      authServerUrlInput.text = authRoot.config.server_url
+    }
+    if (authRoot.config) {
+      authRoot.enableMtlsChecked = Boolean(authRoot.config.client_cert_path && authRoot.certMatchesServer)
+    }
+    if (authClientCertInput) {
+      authClientCertInput.text = authRoot.certMatchesServer ? ((authRoot.config && authRoot.config.client_cert_path) || "") : ""
+    }
+    if (authClientKeyInput) {
+      authClientKeyInput.text = authRoot.certMatchesServer ? ((authRoot.config && authRoot.config.client_key_path) || "") : ""
     }
   }
 
@@ -307,11 +341,280 @@ Item {
               color: authRoot.accent
             }
             Text { Layout.alignment: Qt.AlignHCenter; text: "Log In to Bitwarden"; color: authRoot.foreground; font.pixelSize: Style.font.title; font.weight: Font.DemiBold }
-            Text {
+            RowLayout {
               Layout.alignment: Qt.AlignHCenter
-              text: (authRoot.config && authRoot.config.server_url) ? authRoot.config.server_url : "https://vault.bitwarden.com"
-              color: Qt.darker(authRoot.foreground, 1.8)
-              font.pixelSize: Style.font.caption
+              spacing: 6
+              Text {
+                text: (authRoot.config && authRoot.config.server_url) ? authRoot.config.server_url : "https://vault.bitwarden.com"
+                color: Qt.darker(authRoot.foreground, 1.8)
+                font.pixelSize: Style.font.caption
+              }
+              Rectangle {
+                implicitWidth: changeServerRow.implicitWidth + 8
+                implicitHeight: 18
+                radius: 3
+                color: changeServerMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                border.color: authRoot.borderColor
+                border.width: 1
+
+                RowLayout {
+                  id: changeServerRow
+                  anchors.centerIn: parent
+                  spacing: 4
+                  Text {
+                    text: authRoot.showServerConfig ? "\uf00d Close" : "\uf013 Server"
+                    font.family: authRoot.fontFamily
+                    color: authRoot.accent
+                    font.pixelSize: Style.fontPx(0.7)
+                  }
+                }
+                MouseArea {
+                  id: changeServerMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    authRoot.showServerConfig = !authRoot.showServerConfig
+                    if (authRoot.showServerConfig) {
+                      Qt.callLater(function() {
+                        authServerUrlInput.forceActiveFocus()
+                      })
+                    } else {
+                      Qt.callLater(function() {
+                        if (authRoot.loginMethod === "password") {
+                          loginEmailInput.forceActiveFocus()
+                        } else {
+                          apiClientIdInput.forceActiveFocus()
+                        }
+                      })
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Inline Server & mTLS Configuration Box
+          Rectangle {
+            visible: authRoot.showServerConfig
+            Layout.fillWidth: true
+            radius: 6
+            color: Qt.rgba(0, 0, 0, 0.3)
+            border.color: authRoot.borderColor
+            border.width: 1
+            implicitHeight: serverConfigCol.implicitHeight + 20
+
+            ColumnLayout {
+              id: serverConfigCol
+              anchors.fill: parent
+              anchors.margins: 10
+              spacing: 8
+
+              Text {
+                text: "SERVER & mTLS CLIENT CERTIFICATE"
+                color: authRoot.accent
+                font.pixelSize: Style.font.bodySmall
+                font.weight: Font.DemiBold
+              }
+
+              // Server URL Field
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 3
+                Text { text: "Server URL:"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
+                Rectangle {
+                  Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authServerUrlInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                  TextInput {
+                    id: authServerUrlInput
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                    activeFocusOnTab: true
+                    KeyNavigation.tab: (!authRoot.isOfficialServer && authRoot.enableMtlsChecked && authClientCertInput) ? authClientCertInput : ((authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput)
+                    KeyNavigation.backtab: (authRoot.loginMethod === "password") ? (authRoot.show2FAField ? login2FAInput : loginPwdInput) : apiClientSecInput
+                    text: (authRoot.config && authRoot.config.server_url) ? authRoot.config.server_url : "https://vault.bitwarden.com"
+                  }
+                }
+              }
+
+              // Info text if official server is selected
+              Text {
+                visible: authRoot.isOfficialServer
+                Layout.fillWidth: true
+                text: "Official Bitwarden cloud uses standard HTTPS and does not require client certificates."
+                color: Qt.darker(authRoot.foreground, 1.8)
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              // Optional mTLS Toggle for Self-Hosted Servers
+              RowLayout {
+                visible: !authRoot.isOfficialServer
+                spacing: 6
+                Rectangle {
+                  width: 14; height: 14; radius: 3
+                  color: authRoot.enableMtlsChecked ? authRoot.accent : Qt.rgba(0, 0, 0, 0.2)
+                  border.color: authRoot.borderColor; border.width: 1
+                  Text {
+                    anchors.centerIn: parent
+                    visible: authRoot.enableMtlsChecked
+                    text: "\uf00c"
+                    font.family: authRoot.fontFamily
+                    color: "#ffffff"
+                    font.pixelSize: Style.fontPx(0.75)
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: authRoot.enableMtlsChecked = !authRoot.enableMtlsChecked
+                  }
+                }
+                Text {
+                  text: "Use mTLS Client Certificate (for edge gateways)"
+                  color: authRoot.foreground
+                  font.pixelSize: Style.font.bodySmall
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: authRoot.enableMtlsChecked = !authRoot.enableMtlsChecked
+                  }
+                }
+              }
+
+              // Certificate Section (Self-Hosted Only when mTLS is enabled)
+              ColumnLayout {
+                id: authCertFields
+                visible: !authRoot.isOfficialServer && authRoot.enableMtlsChecked
+                Layout.fillWidth: true
+                spacing: 8
+
+                // Client Certificate (.pem / .crt)
+                ColumnLayout {
+                  Layout.fillWidth: true
+                  spacing: 3
+                  Text { text: "Client Certificate Path (.pem / .crt):"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
+                  Rectangle {
+                    Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientCertInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                    TextInput {
+                      id: authClientCertInput
+                      anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                      color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                      activeFocusOnTab: true
+                      KeyNavigation.tab: authClientKeyInput
+                      KeyNavigation.backtab: authServerUrlInput
+                      text: authRoot.certMatchesServer ? ((authRoot.config && authRoot.config.client_cert_path) || "") : ""
+                    }
+                    Text {
+                      anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                      text: "e.g. /home/user/.certs/client.crt"
+                      color: Qt.darker(authRoot.foreground, 2.0)
+                      font.family: "sans-serif"; font.pixelSize: Style.font.body
+                      visible: authClientCertInput.text.length === 0
+                    }
+                  }
+                }
+
+                // Client Private Key (.key)
+                ColumnLayout {
+                  Layout.fillWidth: true
+                  spacing: 3
+                  Text { text: "Client Private Key Path (optional if merged):"; color: authRoot.foreground; font.pixelSize: Style.font.bodySmall; font.weight: Font.Medium }
+                  Rectangle {
+                    Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: authClientKeyInput.activeFocus ? authRoot.accent : authRoot.borderColor; border.width: 1
+                    TextInput {
+                      id: authClientKeyInput
+                      anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                      color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                      activeFocusOnTab: true
+                      KeyNavigation.tab: (authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput
+                      KeyNavigation.backtab: authClientCertInput
+                      text: authRoot.certMatchesServer ? ((authRoot.config && authRoot.config.client_key_path) || "") : ""
+                    }
+                    Text {
+                      anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                      text: "e.g. /home/user/.certs/client.key (0600 mode)"
+                      color: Qt.darker(authRoot.foreground, 2.0)
+                      font.family: "sans-serif"; font.pixelSize: Style.font.body
+                      visible: authClientKeyInput.text.length === 0
+                    }
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "Private key files must be restricted to 0600 or 0400 file permissions."
+                  color: Qt.darker(authRoot.foreground, 1.8)
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              // Action Buttons Row
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Rectangle {
+                  implicitHeight: 28
+                  implicitWidth: saveServerTxt.implicitWidth + 16
+                  radius: 4
+                  color: authRoot.accent
+                  Text {
+                    id: saveServerTxt
+                    anchors.centerIn: parent
+                    text: "Save & Apply"
+                    color: "#ffffff"
+                    font.pixelSize: Style.font.bodySmall
+                    font.weight: Font.Medium
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      var targetServer = authServerUrlInput.text.trim() || "https://vault.bitwarden.com"
+                      var isOfficial = IconPolicy.isOfficialServer(targetServer)
+                      var useMtls = !isOfficial && authRoot.enableMtlsChecked
+                      authRoot.serverConfigSaved(
+                        targetServer,
+                        useMtls ? (authClientCertInput ? authClientCertInput.text.trim() : "") : "",
+                        useMtls ? (authClientKeyInput ? authClientKeyInput.text.trim() : "") : ""
+                      )
+                      authRoot.showServerConfig = false
+                    }
+                  }
+                }
+
+                Rectangle {
+                  implicitHeight: 28
+                  implicitWidth: resetServerTxt.implicitWidth + 14
+                  radius: 4
+                  color: "transparent"
+                  border.color: authRoot.borderColor
+                  border.width: 1
+                  Text {
+                    id: resetServerTxt
+                    anchors.centerIn: parent
+                    text: "Reset to Official"
+                    color: Qt.darker(authRoot.foreground, 1.3)
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      authServerUrlInput.text = "https://vault.bitwarden.com"
+                      authRoot.enableMtlsChecked = false
+                      if (authClientCertInput) authClientCertInput.text = ""
+                      if (authClientKeyInput) authClientKeyInput.text = ""
+                      authRoot.serverConfigSaved(
+                        "https://vault.bitwarden.com",
+                        "",
+                        ""
+                      )
+                      authRoot.showServerConfig = false
+                    }
+                  }
+                }
+              }
             }
           }
 
@@ -363,7 +666,9 @@ Item {
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: loginPwdInput
-                  KeyNavigation.backtab: authRoot.show2FAField ? login2FAInput : loginPwdInput
+                  KeyNavigation.backtab: authRoot.showServerConfig
+                    ? (!authRoot.isOfficialServer && authRoot.enableMtlsChecked ? authClientKeyInput : authServerUrlInput)
+                    : (authRoot.show2FAField ? login2FAInput : loginPwdInput)
                   text: (authRoot.config && authRoot.config.email) ? authRoot.config.email : ""
                   onAccepted: loginPwdInput.forceActiveFocus()
                 }
@@ -381,7 +686,9 @@ Item {
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; echoMode: TextInput.Password; selectByMouse: true
                   activeFocusOnTab: true
-                  KeyNavigation.tab: (authRoot.show2FAField && authRoot.twoFactorProvider !== 7) ? login2FAInput : loginEmailInput
+                  KeyNavigation.tab: (authRoot.show2FAField && authRoot.twoFactorProvider !== 7)
+                    ? login2FAInput
+                    : (authRoot.showServerConfig ? authServerUrlInput : loginEmailInput)
                   KeyNavigation.backtab: loginEmailInput
                   onAccepted: {
                     if (authRoot.show2FAField && authRoot.twoFactorProvider !== 7 && !login2FAInput.text.trim()) {
@@ -665,7 +972,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                     activeFocusOnTab: true
-                    KeyNavigation.tab: loginEmailInput
+                    KeyNavigation.tab: authRoot.showServerConfig ? authServerUrlInput : loginEmailInput
                     KeyNavigation.backtab: loginPwdInput
                     onAccepted: {
                       authRoot.loginPasswordRequested(
@@ -822,7 +1129,9 @@ Item {
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: apiClientSecInput
-                  KeyNavigation.backtab: apiClientSecInput
+                  KeyNavigation.backtab: authRoot.showServerConfig
+                    ? (!authRoot.isOfficialServer && authRoot.enableMtlsChecked ? authClientKeyInput : authServerUrlInput)
+                    : apiClientSecInput
                   onAccepted: apiClientSecInput.forceActiveFocus()
                 }
               }
@@ -839,7 +1148,7 @@ Item {
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; echoMode: TextInput.Password; selectByMouse: true
                   activeFocusOnTab: true
-                  KeyNavigation.tab: apiClientIdInput
+                  KeyNavigation.tab: authRoot.showServerConfig ? authServerUrlInput : apiClientIdInput
                   KeyNavigation.backtab: apiClientIdInput
                   onAccepted: {
                     authRoot.loginApiKeyRequested(apiClientIdInput.text.trim(), apiClientSecInput.text.trim())
