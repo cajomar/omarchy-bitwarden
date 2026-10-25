@@ -5,13 +5,13 @@ rust = "1.98.0"
 description = "Build the CLI"
 run = "cd omawarden && cargo build"
 
-[tasks.dev-cli]
-description = "Run the CLI in development mode"
-run = "cd omawarden && cargo run --"
-
 [tasks.build-release]
 description = "Build the CLI in release mode"
 run = "cd omawarden && cargo build --release && mkdir -p ../bin && cp -f target/release/omawarden ../bin/omawarden"
+
+[tasks.dev-cli]
+description = "Run the CLI in development mode"
+run = "cd omawarden && cargo run --"
 
 [tasks.dev-update-omarchy-plugin]
 description = "Update the Omarchy plugin in development mode"
@@ -27,11 +27,21 @@ git reset --hard "origin/$BRANCH"
 description = "Restart the Omarchy plugin in development mode"
 run = "omarchy-restart-shell"
 
-[tasks.dev-deploy]
+[tasks.dev-deploy-full]
 description = "Build, package and deploy the CLI and plugin in development mode"
 depends = ["dev-update-omarchy-plugin"]
 depends_post = ["dev-restart-omarchy"]
 run = "./scripts/package-dev.sh --install"
+
+[tasks.dev-deploy-cli]
+description = "Build, package and deploy the CLI in development mode"
+run = "./scripts/package-dev.sh --install"
+
+[tasks.dev-deploy-plugin]
+description = "Build, package and deploy the plugin in development mode"
+depends = ["dev-update-omarchy-plugin"]
+depends_post = ["dev-restart-omarchy"]
+run = "echo Deploying omarchy-bitwarden plugin in development mode"
 
 [tasks.pkg-dev]
 description = "Build and package omawarden as a local Arch Linux package (omawarden-bin)"
