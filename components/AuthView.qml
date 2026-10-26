@@ -254,6 +254,7 @@ Item {
                   font.pixelSize: Style.font.body
                   echoMode: TextInput.Password
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   onAccepted: {
                     if (text.trim()) {
@@ -428,6 +429,7 @@ Item {
                     id: authServerUrlInput
                     anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                     color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                    clip: true
                     activeFocusOnTab: true
                     KeyNavigation.tab: (!authRoot.isOfficialServer && authRoot.enableMtlsChecked && authClientCertInput) ? authClientCertInput : ((authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput)
                     KeyNavigation.backtab: (authRoot.loginMethod === "password") ? (authRoot.show2FAField ? login2FAInput : loginPwdInput) : apiClientSecInput
@@ -498,6 +500,7 @@ Item {
                       id: authClientCertInput
                       anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                       color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                      clip: true
                       activeFocusOnTab: true
                       KeyNavigation.tab: authClientKeyInput
                       KeyNavigation.backtab: authServerUrlInput
@@ -524,6 +527,7 @@ Item {
                       id: authClientKeyInput
                       anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                       color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                      clip: true
                       activeFocusOnTab: true
                       KeyNavigation.tab: (authRoot.loginMethod === "password") ? loginEmailInput : apiClientIdInput
                       KeyNavigation.backtab: authClientCertInput
@@ -664,6 +668,7 @@ Item {
                   id: loginEmailInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: loginPwdInput
                   KeyNavigation.backtab: authRoot.showServerConfig
@@ -685,6 +690,7 @@ Item {
                   id: loginPwdInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; echoMode: TextInput.Password; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: (authRoot.show2FAField && authRoot.twoFactorProvider !== 7)
                     ? login2FAInput
@@ -971,6 +977,7 @@ Item {
                     anchors.rightMargin: resendEmailBtn.visible ? 6 : 10
                     anchors.verticalCenter: parent.verticalCenter
                     color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                    clip: true
                     activeFocusOnTab: true
                     KeyNavigation.tab: authRoot.showServerConfig ? authServerUrlInput : loginEmailInput
                     KeyNavigation.backtab: loginPwdInput
@@ -1127,6 +1134,7 @@ Item {
                   id: apiClientIdInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: apiClientSecInput
                   KeyNavigation.backtab: authRoot.showServerConfig
@@ -1147,6 +1155,7 @@ Item {
                   id: apiClientSecInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
                   color: authRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; echoMode: TextInput.Password; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: authRoot.showServerConfig ? authServerUrlInput : apiClientIdInput
                   KeyNavigation.backtab: apiClientIdInput

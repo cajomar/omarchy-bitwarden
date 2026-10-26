@@ -544,6 +544,7 @@ Item {
               TextInput {
                 id: sUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: idUrlInput
                 KeyNavigation.backtab: maxAttSizeInput
@@ -566,6 +567,7 @@ Item {
               TextInput {
                 id: idUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientCertInput : dlDirInput
                 KeyNavigation.backtab: sUrlInput
@@ -630,6 +632,7 @@ Item {
               TextInput {
                 id: clientCertInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: clientKeyInput
                 KeyNavigation.backtab: idUrlInput
@@ -660,6 +663,7 @@ Item {
               TextInput {
                 id: clientKeyInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: dlDirInput
                 KeyNavigation.backtab: clientCertInput
@@ -685,6 +689,7 @@ Item {
               TextInput {
                 id: dlDirInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: lockMinInput
                 KeyNavigation.backtab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientKeyInput : idUrlInput
@@ -708,6 +713,7 @@ Item {
                 TextInput {
                   id: lockMinInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: clipSecInput
                   KeyNavigation.backtab: dlDirInput
@@ -728,6 +734,7 @@ Item {
                 TextInput {
                   id: clipSecInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: maxAttSizeInput
                   KeyNavigation.backtab: lockMinInput
@@ -748,6 +755,7 @@ Item {
                 TextInput {
                   id: maxAttSizeInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: sUrlInput
                   KeyNavigation.backtab: clipSecInput
