@@ -307,13 +307,24 @@ fn summon_overlay(payload: &serde_json::Value) -> bool {
         );
         return false;
     };
-    let result = std::process::Command::new(shell)
-        .args(["shell", "summon", "icyleaf.bitwarden", &payload.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
-    match result {
-        Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok",
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["shell", "summon", "icyleaf.bitwarden", &payload.to_string()])
+        .stdin(std::process::Stdio::null());
+    match cmd.output() {
+        Ok(out) => {
+            let reply = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let opened = out.status.success() && reply == "ok";
+            if !opened {
+                crate::log_warn!(
+                    "omawarden:ssh-agent",
+                    "omarchy-shell did not open the overlay ({}); replied {:?}, stderr {:?}",
+                    out.status,
+                    reply,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            opened
+        }
         Err(e) => {
             crate::log_warn!("omawarden:ssh-agent", "could not summon the overlay: {}", e);
             false
