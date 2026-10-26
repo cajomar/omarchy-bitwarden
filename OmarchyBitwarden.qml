@@ -1798,7 +1798,7 @@ Item {
     if (authViewComponent) {
       authViewComponent.twoFactorProvider = effectiveProvider
     }
-    root.logInfo("omarchy:auth", "Submitting password login for " + email + " (provider: " + effectiveProvider + ")...")
+    root.logInfo("omarchy:auth", "Submitting password login (provider: " + effectiveProvider + ")...")
     root.isBusy = true
     root.errorMessage = ""
     if (root.show2FAField && effectiveProvider === 7) {
@@ -1833,7 +1833,7 @@ Item {
 
   function doLoginApiKey(clientId, clientSecret) {
     if (!clientId || !clientSecret) return
-    root.logInfo("omarchy:auth", "Submitting API Key login for client " + clientId + "...")
+    root.logInfo("omarchy:auth", "Submitting API Key login...")
     root.isBusy = true
     root.errorMessage = ""
     root.statusMessage = "Authenticating with API Key..."
@@ -1850,7 +1850,7 @@ Item {
       }
       return
     }
-    root.logInfo("omarchy:auth", "Submitting send two-factor email request for " + email + "...")
+    root.logInfo("omarchy:auth", "Submitting send two-factor email request...")
     root.isBusy = true
     root.errorMessage = ""
     root.statusMessage = "Sending verification email..."
@@ -2978,7 +2978,14 @@ Item {
             var cleanTag = String(rawTag).replace(/^omawarden-|^v/i, "").trim()
             root.latestVersion = cleanTag
             root.latestReleaseNotes = data.body || ""
-            root.latestReleaseUrl = data.url || (rawTag ? ("https://github.com/icyleaf/omarchy-bitwarden/releases/tag/" + rawTag) : "")
+            // Only accept release URLs hosted on github.com under an
+            // omarchy-bitwarden project; anything else from the update feed
+            // falls back to the constructed upstream tag URL.
+            var releaseUrl = data.url || ""
+            if (!/^https:\/\/github\.com\/[^\/]+\/omarchy-bitwarden\//.test(releaseUrl)) {
+              releaseUrl = rawTag ? ("https://github.com/icyleaf/omarchy-bitwarden/releases/tag/" + rawTag) : ""
+            }
+            root.latestReleaseUrl = releaseUrl
             root.latestReleaseTitle = data.name || (cleanTag ? ("omawarden v" + cleanTag) : "")
             var currentVer = (root.cliHealth && root.cliHealth.version) ? root.cliHealth.version : ""
             if (currentVer && root.compareSemVer(cleanTag, currentVer) > 0) {
