@@ -30,6 +30,8 @@ Item {
   property color mutedForeground: Qt.darker(foreground, 1.8)
   property string fontFamily: ""
   property bool checkUpdatesChecked: true
+  readonly property alias confirmRepeater: confirmRepeater
+  readonly property alias logSeverityRepeater: logSeverityRepeater
 
   Timer {
     id: latestTimer
@@ -932,25 +934,28 @@ Item {
             RowLayout {
               visible: settingsRoot.sshAgentChecked
               Layout.topMargin: 2
-              spacing: 6
+              spacing: 4
               Text { text: "Confirm signatures:"; color: settingsRoot.mutedForeground; font.pixelSize: Style.font.caption }
               Repeater {
+                id: confirmRepeater
                 model: [["always", "Every time"], ["first-use", "First use"], ["never", "Never"]]
                 Rectangle {
+                  id: confirmItem
                   required property var modelData
                   readonly property bool chosen: settingsRoot.sshAgentConfirm === modelData[0]
-                  implicitHeight: 20
+                  implicitHeight: 24
                   implicitWidth: confirmLabel.implicitWidth + 14
-                  radius: 3
-                  color: chosen ? settingsRoot.accent : (confirmMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
-                  border.color: chosen ? settingsRoot.accent : settingsRoot.borderColor
+                  radius: 4
+                  color: chosen ? Qt.rgba(settingsRoot.accent.r, settingsRoot.accent.g, settingsRoot.accent.b, 0.2) : (confirmMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                  border.color: chosen ? settingsRoot.accent : "transparent"
                   border.width: 1
                   Text {
                     id: confirmLabel
                     anchors.centerIn: parent
                     text: modelData[1]
-                    color: chosen ? "#ffffff" : settingsRoot.foreground
-                    font.pixelSize: Style.font.caption
+                    color: confirmItem.chosen ? settingsRoot.accent : (confirmMouse.containsMouse ? settingsRoot.foreground : Qt.darker(settingsRoot.foreground, 1.3))
+                    font.pixelSize: Style.font.bodySmall
+                    font.weight: confirmItem.chosen ? Font.DemiBold : Font.Normal
                   }
                   MouseArea {
                     id: confirmMouse
@@ -972,6 +977,7 @@ Item {
             RowLayout {
               spacing: 4
               Repeater {
+                id: logSeverityRepeater
                 model: ["error", "warn", "info", "debug"]
                 Rectangle {
                   id: lvlItem
