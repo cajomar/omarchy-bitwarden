@@ -31,6 +31,18 @@ Item {
     check(payload.ssh_agent_confirm === "never", "payload ssh_agent_confirm reflects the choice")
     check(payload.server_url !== undefined, "existing keys still present")
 
+    // Style parity with logging severity level
+    var confirmItem0 = sm.confirmRepeater.itemAt(0)
+    var logItem0 = sm.logSeverityRepeater.itemAt(0)
+    check(confirmItem0 !== null, "confirm options item exists")
+    check(logItem0 !== null, "log level item exists")
+    if (confirmItem0 && logItem0) {
+      check(confirmItem0.implicitHeight === logItem0.implicitHeight, "confirm option height matches logging level (" + confirmItem0.implicitHeight + " == " + logItem0.implicitHeight + ")")
+      check(confirmItem0.radius === logItem0.radius, "confirm option radius matches logging level (" + confirmItem0.radius + " == " + logItem0.radius + ")")
+      check(confirmItem0.border.width === logItem0.border.width, "confirm option border width matches logging level")
+      console.log("PASS: confirm options styling matches logging severity level")
+    }
+
     Qt.exit(failures === 0 ? 0 : 1)
   }
 }
