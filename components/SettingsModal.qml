@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import "./IconPolicy.js" as IconPolicy
 import qs.Commons
 
@@ -631,7 +632,7 @@ Item {
               Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientCertInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
               TextInput {
                 id: clientCertInput
-                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                anchors.left: parent.left; anchors.right: settingsCertBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: clientKeyInput
@@ -639,11 +640,22 @@ Item {
                 text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_cert_path) || "") : ""
               }
               Text {
-                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.right: settingsCertBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
                 text: "e.g. /home/user/.certs/client.crt or client.pem"
                 color: settingsRoot.mutedForeground
                 font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
                 visible: clientCertInput.text.length === 0
+              }
+              GhostIconButton {
+                id: settingsCertBrowseBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "\uf07b"
+                fontFamily: settingsRoot.fontFamily
+                tooltip: "Browse certificate file"
+                onClicked: settingsCertFileDialog.open()
               }
             }
           }
@@ -662,7 +674,7 @@ Item {
               Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientKeyInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
               TextInput {
                 id: clientKeyInput
-                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                anchors.left: parent.left; anchors.right: settingsKeyBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
                 clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: dlDirInput
@@ -670,12 +682,43 @@ Item {
                 text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_key_path) || "") : ""
               }
               Text {
-                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.right: settingsKeyBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
                 text: "e.g. /home/user/.certs/client.key"
                 color: settingsRoot.mutedForeground
                 font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
                 visible: clientKeyInput.text.length === 0
               }
+              GhostIconButton {
+                id: settingsKeyBrowseBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "\uf07b"
+                fontFamily: settingsRoot.fontFamily
+                tooltip: "Browse private key file"
+                onClicked: settingsKeyFileDialog.open()
+              }
+            }
+          }
+
+          FileDialog {
+            id: settingsCertFileDialog
+            title: "Select Client Certificate (.pem / .crt)"
+            fileMode: FileDialog.OpenFile
+            nameFilters: ["Certificate files (*.crt *.pem)", "All files (*)"]
+            onAccepted: {
+              clientCertInput.text = IconPolicy.urlToLocalPath(selectedFile)
+            }
+          }
+
+          FileDialog {
+            id: settingsKeyFileDialog
+            title: "Select Client Private Key (.key / .pem)"
+            fileMode: FileDialog.OpenFile
+            nameFilters: ["Private key files (*.key *.pem)", "All files (*)"]
+            onAccepted: {
+              clientKeyInput.text = IconPolicy.urlToLocalPath(selectedFile)
             }
           }
 
