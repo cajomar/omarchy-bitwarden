@@ -101,6 +101,14 @@ Item {
     check(restoreRes.certMatchesServer === true, "Same origin with different path matches and restores cert")
     check(restoreRes.displayedCert === "/home/user/.certs/client.crt", "Restored cert path matches")
 
+    // 5. URL to Local Path Decoding Tests (File Picker integration)
+    check(IconPolicy.urlToLocalPath("file:///home/user/.certs/client.crt") === "/home/user/.certs/client.crt", "File URL converted to POSIX path")
+    check(IconPolicy.urlToLocalPath("file:///home/user/My%20Certs/client%20cert.crt") === "/home/user/My Certs/client cert.crt", "Encoded URI path decoded")
+    check(IconPolicy.urlToLocalPath("/home/user/.certs/client.crt") === "/home/user/.certs/client.crt", "Raw POSIX path preserved")
+    check(IconPolicy.urlToLocalPath("") === "", "Empty URL returns empty string")
+    check(IconPolicy.urlToLocalPath(null) === "", "Null URL returns empty string")
+    check(IconPolicy.urlToLocalPath(undefined) === "", "Undefined URL returns empty string")
+
     console.log("ALL mTLS UI GATING TESTS PASSED!")
     Qt.exit(failures === 0 ? 0 : 1)
   }

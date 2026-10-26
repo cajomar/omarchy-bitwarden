@@ -302,6 +302,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: commentInput
                   KeyNavigation.backtab: outDirInput
@@ -395,6 +396,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: notesInput
                   KeyNavigation.backtab: createNameInput
@@ -517,6 +519,7 @@ Rectangle {
                   color: modalRoot.exportToLocal ? modalRoot.foreground : Qt.darker(modalRoot.foreground, 2.0)
                   font.pixelSize: Style.font.bodySmall
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: createNameInput
                   KeyNavigation.backtab: notesInput
@@ -564,6 +567,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: importPrivInput
                   KeyNavigation.backtab: importNotesInput
@@ -603,6 +607,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: importPubInput
                   KeyNavigation.backtab: importNameInput
@@ -648,6 +653,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: importNotesInput
                   KeyNavigation.backtab: importPrivInput
@@ -787,6 +793,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: exportPrivInput
                   KeyNavigation.backtab: exportPubInput
@@ -826,6 +833,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: exportPubInput
                   KeyNavigation.backtab: exportDirInput
@@ -870,6 +878,7 @@ Rectangle {
                   color: modalRoot.foreground
                   font.pixelSize: Style.font.body
                   selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: exportDirInput
                   KeyNavigation.backtab: exportPrivInput

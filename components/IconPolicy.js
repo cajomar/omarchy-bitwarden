@@ -57,3 +57,13 @@ function resolveIconUrl(serverUrl, domain) {
   var base = getIconBaseUrl(serverUrl)
   return base + "/" + domain + "/icon.png"
 }
+
+function urlToLocalPath(fileUrl) {
+  if (!fileUrl) return ""
+  var str = String(fileUrl)
+  if (str.indexOf("file://") === 0) {
+    str = str.substring(7)
+  }
+  return decodeURIComponent(str)
+}
+
