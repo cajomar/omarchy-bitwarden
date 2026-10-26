@@ -1957,6 +1957,12 @@ Item {
         if (root.effectiveView === "search" && root.selectedItem) {
           root.handleSelectedItemChanged()
         }
+      } else if (root.opened) {
+        // The compositor closed the window (close shortcut, titlebar) behind
+        // our back. Without this, `opened` stays true: open() becomes a no-op,
+        // so the SSH agent's unlock and approval summons do nothing and the
+        // next toggle only hides a window that isn't there.
+        root.dismiss()
       }
     }
 
