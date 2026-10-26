@@ -836,14 +836,13 @@ fn persist_attachment_tokens(
         if s1 && s2 {
             fresh_st.access_token = None;
             fresh_st.refresh_token = None;
-        } else {
-            fresh_st.access_token = Some(tok_resp.access_token.clone());
-            fresh_st.refresh_token = tok_resp.refresh_token.clone();
         }
-    } else {
-        fresh_st.access_token = Some(tok_resp.access_token.clone());
-        fresh_st.refresh_token = tok_resp.refresh_token.clone();
+        // Keyring store failed: drop the tokens instead of stashing them in
+        // this short-lived copy. VaultStorage never serializes them to disk
+        // (skip_serializing), and nothing else reads them from here — same
+        // fail-closed posture as vault.rs.
     }
+    // No keyring at all: tokens are dropped for the same reason.
     let _ = storage_mgr.save(&fresh_st);
 }
 

@@ -362,18 +362,40 @@ fi
             .with_generation_path(dir.path().join("clipboard_gen"))
             .without_detached_worker();
 
-        assert!(mgr.copy_with_duration("secret_1", true, Duration::from_millis(150)));
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(mgr.copy_with_duration("secret_2", true, Duration::from_millis(500)));
+        // The first copy's deadline must sit far enough in the future that the
+        // second copy finishes AND bumps the generation counter before the
+        // first timer wakes: with fixed 150ms/60ms margins, a loaded CI runner
+        // could stall past 150ms mid-copy and let timer #1 clear the freshly
+        // written secret_2 (observed as a flake on GitHub runners). Polling on
+        // the generation counter removes the race; the assertions stay the
+        // same: a subsequent copy invalidates the pending auto-clear.
+        let first_deadline = Duration::from_millis(2000);
+        let start = std::time::Instant::now();
+        assert!(mgr.copy_with_duration("secret_1", true, first_deadline));
 
-        // Wait past secret_1's 150ms deadline (now at 210ms from secret_1 start, 150ms from secret_2 start)
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(50));
+        let gen_before = mgr.current_generation();
+        // secret_2's own auto-clear must outlive the assertion window below.
+        assert!(mgr.copy_with_duration("secret_2", true, Duration::from_millis(3000)));
+        let bump_guard = start + first_deadline - Duration::from_millis(500);
+        while mgr.current_generation() <= gen_before {
+            assert!(
+                std::time::Instant::now() < bump_guard,
+                "second copy did not bump the generation counter in time"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Wait past secret_1's deadline
+        while std::time::Instant::now() < start + first_deadline + Duration::from_millis(250) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // secret_2 should STILL be present because secret_1's timer generation mismatched!
         assert_eq!(fs::read_to_string(&clip_file).unwrap(), "secret_2");
 
         // Poll for secret_2's auto-clear to execute and remove clip_file
         let mut cleared = false;
-        for _ in 0..50 {
+        for _ in 0..300 {
             if !clip_file.exists() {
                 cleared = true;
                 break;
