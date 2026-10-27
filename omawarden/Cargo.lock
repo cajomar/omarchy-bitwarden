@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "omawarden"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aes",
  "argon2",
