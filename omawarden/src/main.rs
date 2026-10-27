@@ -22,6 +22,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+/// Auth output can carry a raw access token in `session`. Piped callers (the
+/// QML helper) depend on it; an interactive terminal would only leave it
+/// behind in scrollback, so redact it there.
+fn print_json_redacting_session<T: serde::Serialize>(value: &T) {
+    let mut val = serde_json::to_value(value).unwrap_or(Value::Null);
+    if io::stdout().is_terminal() {
+        if let Some(session) = val.get("session").and_then(Value::as_str) {
+            if !session.is_empty() {
+                val["session"] = json!("[redacted; pipe stdout to keep the token]");
+            }
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&val).unwrap());
+}
+
 #[derive(Parser)]
 #[command(
     name = "omawarden",
@@ -873,8 +888,14 @@ fn main() -> ExitCode {
                                 );
                             }
                         } else if res.two_factor_required == Some(true) {
-                            let providers =
+                            let mut providers =
                                 res.two_factor_providers.clone().unwrap_or_else(|| vec![0]);
+                            // A server reporting two_factor_required with an empty
+                            // providers list would panic on providers[default_idx]
+                            // below; fall back to the authenticator-app provider.
+                            if providers.is_empty() {
+                                providers.push(0);
+                            }
                             let default_idx = if let Some(pref) = res.two_factor_provider {
                                 providers.iter().position(|p| *p == pref).unwrap_or(0)
                             } else {
@@ -962,7 +983,7 @@ fn main() -> ExitCode {
                             let _ = config_mgr.save(&latest_cfg);
                         }
                     }
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     if res.ok {
                         ExitCode::SUCCESS
                     } else {
@@ -985,7 +1006,7 @@ fn main() -> ExitCode {
                         secret
                     };
                     let res = auth_mgr.login_apikey(&client_id, &actual_secret);
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     if res.ok {
                         ExitCode::SUCCESS
                     } else {
@@ -1005,7 +1026,7 @@ fn main() -> ExitCode {
                             "ok": false,
                             "error": "Password is required to send verification code."
                         });
-                        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                        print_json_redacting_session(&res);
                         ExitCode::FAILURE
                     } else {
                         match auth_mgr.send_two_factor_email(&email, &pwd) {
@@ -1014,7 +1035,7 @@ fn main() -> ExitCode {
                                     "ok": true,
                                     "message": "Two-factor verification code sent to your email."
                                 });
-                                println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                                print_json_redacting_session(&res);
                                 ExitCode::SUCCESS
                             }
                             Err(e) => {
@@ -1022,7 +1043,7 @@ fn main() -> ExitCode {
                                     "ok": false,
                                     "error": e.to_string()
                                 });
-                                println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                                print_json_redacting_session(&res);
                                 ExitCode::FAILURE
                             }
                         }
@@ -1034,7 +1055,7 @@ fn main() -> ExitCode {
                         "ok": true,
                         "status": status.as_str()
                     });
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     ExitCode::SUCCESS
                 }
                 AuthAction::Unlock => {
@@ -1045,7 +1066,7 @@ fn main() -> ExitCode {
                     };
                     omawarden::daemon::ensure_daemon_running();
                     let res = auth_mgr.unlock(&pwd);
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     if res.ok {
                         ExitCode::SUCCESS
                     } else {
@@ -1055,13 +1076,13 @@ fn main() -> ExitCode {
                 AuthAction::Lock => {
                     let _ = send_daemon_request(&json!({ "action": "lock" }));
                     let res = auth_mgr.lock();
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     ExitCode::SUCCESS
                 }
                 AuthAction::Logout => {
                     let _ = send_daemon_request(&json!({ "action": "lock" }));
                     let res = auth_mgr.logout();
-                    println!("{}", serde_json::to_string_pretty(&res).unwrap());
+                    print_json_redacting_session(&res);
                     ExitCode::SUCCESS
                 }
             }

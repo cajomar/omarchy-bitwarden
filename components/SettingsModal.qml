@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import "./IconPolicy.js" as IconPolicy
 import qs.Commons
 
@@ -29,6 +30,8 @@ Item {
   property color mutedForeground: Qt.darker(foreground, 1.8)
   property string fontFamily: ""
   property bool checkUpdatesChecked: true
+  readonly property alias confirmRepeater: confirmRepeater
+  readonly property alias logSeverityRepeater: logSeverityRepeater
 
   Timer {
     id: latestTimer
@@ -544,6 +547,7 @@ Item {
               TextInput {
                 id: sUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: idUrlInput
                 KeyNavigation.backtab: maxAttSizeInput
@@ -566,6 +570,7 @@ Item {
               TextInput {
                 id: idUrlInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientCertInput : dlDirInput
                 KeyNavigation.backtab: sUrlInput
@@ -629,18 +634,30 @@ Item {
               Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientCertInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
               TextInput {
                 id: clientCertInput
-                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                anchors.left: parent.left; anchors.right: settingsCertBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: clientKeyInput
                 KeyNavigation.backtab: idUrlInput
                 text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_cert_path) || "") : ""
               }
               Text {
-                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.right: settingsCertBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
                 text: "e.g. /home/user/.certs/client.crt or client.pem"
                 color: settingsRoot.mutedForeground
                 font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
                 visible: clientCertInput.text.length === 0
+              }
+              GhostIconButton {
+                id: settingsCertBrowseBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "\uf07b"
+                fontFamily: settingsRoot.fontFamily
+                tooltip: "Browse certificate file"
+                onClicked: settingsCertFileDialog.open()
               }
             }
           }
@@ -659,19 +676,51 @@ Item {
               Layout.fillWidth: true; height: 32; radius: 5; color: Qt.rgba(0, 0, 0, 0.25); border.color: clientKeyInput.activeFocus ? settingsRoot.accent : settingsRoot.borderColor; border.width: 1
               TextInput {
                 id: clientKeyInput
-                anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                anchors.left: parent.left; anchors.right: settingsKeyBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: dlDirInput
                 KeyNavigation.backtab: clientCertInput
                 text: settingsRoot.certMatchesServer ? ((settingsRoot.config && settingsRoot.config.client_key_path) || "") : ""
               }
               Text {
-                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.right: settingsKeyBrowseBtn.left; anchors.leftMargin: 10; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
                 text: "e.g. /home/user/.certs/client.key"
                 color: settingsRoot.mutedForeground
                 font.family: "sans-serif"; font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
                 visible: clientKeyInput.text.length === 0
               }
+              GhostIconButton {
+                id: settingsKeyBrowseBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "\uf07b"
+                fontFamily: settingsRoot.fontFamily
+                tooltip: "Browse private key file"
+                onClicked: settingsKeyFileDialog.open()
+              }
+            }
+          }
+
+          FileDialog {
+            id: settingsCertFileDialog
+            title: "Select Client Certificate (.pem / .crt)"
+            fileMode: FileDialog.OpenFile
+            nameFilters: ["Certificate files (*.crt *.pem)", "All files (*)"]
+            onAccepted: {
+              clientCertInput.text = IconPolicy.urlToLocalPath(selectedFile)
+            }
+          }
+
+          FileDialog {
+            id: settingsKeyFileDialog
+            title: "Select Client Private Key (.key / .pem)"
+            fileMode: FileDialog.OpenFile
+            nameFilters: ["Private key files (*.key *.pem)", "All files (*)"]
+            onAccepted: {
+              clientKeyInput.text = IconPolicy.urlToLocalPath(selectedFile)
             }
           }
 
@@ -685,6 +734,7 @@ Item {
               TextInput {
                 id: dlDirInput
                 anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                clip: true
                 activeFocusOnTab: true
                 KeyNavigation.tab: lockMinInput
                 KeyNavigation.backtab: (!settingsRoot.isOfficialServer && settingsRoot.enableMtlsChecked) ? clientKeyInput : idUrlInput
@@ -708,6 +758,7 @@ Item {
                 TextInput {
                   id: lockMinInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: clipSecInput
                   KeyNavigation.backtab: dlDirInput
@@ -728,6 +779,7 @@ Item {
                 TextInput {
                   id: clipSecInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: maxAttSizeInput
                   KeyNavigation.backtab: lockMinInput
@@ -748,6 +800,7 @@ Item {
                 TextInput {
                   id: maxAttSizeInput
                   anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; color: settingsRoot.foreground; font.family: "sans-serif"; font.pixelSize: Style.font.body; selectByMouse: true
+                  clip: true
                   activeFocusOnTab: true
                   KeyNavigation.tab: sUrlInput
                   KeyNavigation.backtab: clipSecInput
@@ -881,25 +934,28 @@ Item {
             RowLayout {
               visible: settingsRoot.sshAgentChecked
               Layout.topMargin: 2
-              spacing: 6
+              spacing: 4
               Text { text: "Confirm signatures:"; color: settingsRoot.mutedForeground; font.pixelSize: Style.font.caption }
               Repeater {
+                id: confirmRepeater
                 model: [["always", "Every time"], ["first-use", "First use"], ["never", "Never"]]
                 Rectangle {
+                  id: confirmItem
                   required property var modelData
                   readonly property bool chosen: settingsRoot.sshAgentConfirm === modelData[0]
-                  implicitHeight: 20
+                  implicitHeight: 24
                   implicitWidth: confirmLabel.implicitWidth + 14
-                  radius: 3
-                  color: chosen ? settingsRoot.accent : (confirmMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
-                  border.color: chosen ? settingsRoot.accent : settingsRoot.borderColor
+                  radius: 4
+                  color: chosen ? Qt.rgba(settingsRoot.accent.r, settingsRoot.accent.g, settingsRoot.accent.b, 0.2) : (confirmMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                  border.color: chosen ? settingsRoot.accent : "transparent"
                   border.width: 1
                   Text {
                     id: confirmLabel
                     anchors.centerIn: parent
                     text: modelData[1]
-                    color: chosen ? "#ffffff" : settingsRoot.foreground
-                    font.pixelSize: Style.font.caption
+                    color: confirmItem.chosen ? settingsRoot.accent : (confirmMouse.containsMouse ? settingsRoot.foreground : Qt.darker(settingsRoot.foreground, 1.3))
+                    font.pixelSize: Style.font.bodySmall
+                    font.weight: confirmItem.chosen ? Font.DemiBold : Font.Normal
                   }
                   MouseArea {
                     id: confirmMouse
@@ -921,6 +977,7 @@ Item {
             RowLayout {
               spacing: 4
               Repeater {
+                id: logSeverityRepeater
                 model: ["error", "warn", "info", "debug"]
                 Rectangle {
                   id: lvlItem

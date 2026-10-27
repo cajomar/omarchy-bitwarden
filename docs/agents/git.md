@@ -53,6 +53,8 @@ All implementation and bugfix tasks must follow a strict branch-and-PR workflow 
      ```bash
      git push -u origin HEAD
      ```
+   - **Crucial Rule**: Every new feature, bugfix, or UI change **MUST** be placed on its own dedicated branch off `develop`. Do not combine unrelated tasks or reuse old merged branches.
+   - **Wait for Developer Verification**: Agents must **NEVER** proactively open a Pull Request without explicit confirmation or verification from the developer/user. Wait until the developer completes local verification and gives explicit instruction to submit the PR.
    - Create PR targeting `develop` (linking the issue if applicable):
      ```bash
      gh pr create --base develop --title "<type>(<scope>): <summary>" --body "Closes #<issue_number>
@@ -62,7 +64,8 @@ All implementation and bugfix tasks must follow a strict branch-and-PR workflow 
      ```
 
 5. **Merge PR & Clean Up**:
-   - Merge the pull request into `develop` (squash or rebase):
+   - **Crucial Rule**: Agents must **NEVER** proactively merge a Pull Request (`gh pr merge` or `git merge`) without explicit user permission and instruction. PR reviews, approvals, and merges are strictly controlled by the developer/owner.
+   - If the developer explicitly instructs to merge via CLI:
      ```bash
      gh pr merge --squash --delete-branch
      ```
